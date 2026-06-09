@@ -179,9 +179,13 @@ cron.schedule('0 6 * * 0,1,2,4,5,6', async () => {
     const text =
       `☀️ *Доброе утро, ${name}!*\n\n` +
       `💡 *Мысль дня:*\n_${THOUGHTS[idx]}_\n\n` +
-      `❓ *Вопрос:*\n${QUESTIONS[idx % QUESTIONS.length]}${streak}\n` +
-      `Отметь действия сегодня 👇`;
-    if (await sendMsg(u.chatId, text, '✓ Открыть чеклист')) sent++;
+      `❓ *Вопрос на сегодня:*\n${QUESTIONS[idx % QUESTIONS.length]}${streak}`;
+    // Утром — только вдохновение, без ссылки на чеклист
+    try {
+      await bot.sendMessage(u.chatId, text, { parse_mode: 'Markdown' });
+      await new Promise(r => setTimeout(r, 150));
+      sent++;
+    } catch(e) { console.error(`Morning error ${u.chatId}:`, e.message); }
   }
   console.log(`[CRON] Morning: ${sent}/${users.length}`);
 }, { timezone: 'UTC' });
@@ -219,7 +223,10 @@ cron.schedule('0 17 * * *', async () => {
     const absent = getDaysAbsent(u.lastDate);
     let text = null;
 
-    if (absent === 0) continue;
+    if (absent === 0) {
+      // Активен сегодня — напоминаем заполнить чеклист
+      text = `📋 *${name}, как прошёл день?*\n\nЗайди и отметь что сделал сегодня — займёт 2 минуты.\nСерия продолжается 👇`;
+    }
     else if (absent === 1) text = `🎯 *${name}, ещё не поздно*\n\nОтметь хотя бы одно действие — и день засчитан.\n2 минуты. Серия продолжается 👇`;
     else if (absent <= 3)  text = `⚡ *${name}, ты пропал на ${absent} дня*\n\nЧто произошло? Серия прервалась, но Momentum ещё можно восстановить 👇`;
     else if (absent <= 6)  text = `🔴 *${name}, уже ${absent} дней без DOJO*\n\nПотерял фокус? Это бывает.\nОдин шаг — и ты снова в системе 👇`;
@@ -244,7 +251,7 @@ cron.schedule('0 17 * * *', async () => {
       text = `👋 *${name}*\n\nDOJO всё ещё здесь. Возвращайся 👇`;
     }
 
-    if (text && await sendMsg(u.chatId, text)) sent++;
+    if (text && await sendMsg(u.chatId, text, '✓ Заполнить чеклист')) sent++;
   }
   console.log(`[CRON] Evening: ${sent}/${users.length}`);
 }, { timezone: 'UTC' });
