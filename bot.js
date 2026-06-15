@@ -160,7 +160,7 @@ const QUESTIONS = [
   "Как ты можешь помочь кому-то в своей команде сегодня?",
   "Что изменится когда ты закроешь следующий ранг?",
   "Какой навык ты развиваешь прямо сейчас?",
-   "Если бы ты мог сделать только одно действие сегодня — что бы это было?",
+  "Если бы ты мог сделать только одно действие сегодня — что бы это было?",
   "Кому ты ещё не написал из своего списка контактов?",
   "Что мешает тебе быть на 10% активнее сегодня?",
   "Как выглядит твой идеальный рабочий день в этом бизнесе?",
@@ -220,7 +220,7 @@ const QUESTIONS = [
   "Как ты начнёшь следующую неделю чтобы она была лучше этой?",
   "Что мешает тебе вырасти до следующего уровня прямо сейчас?",
   "Ты чувствуешь движение в своём бизнесе сегодня?",
-  "Кому ты можешь сказать «спасибо» за помощь на этом пути?",
+  "Кому ты можешь сказать спасибо за помощь на этом пути?",
   "Что сделает твой бизнес через год если ты продолжишь в том же темпе?",
   "Ты доволен своим уровнем активности на этой неделе?",
   "Что бы ты сделал если бы знал что не можешь потерпеть неудачу?",
@@ -245,7 +245,7 @@ function getDaysAbsent(lastDate) {
 // ── BOT ─────────────────────────────────────────
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-// /start REF_CODE — основная команда регистрации
+// /start REF_CODE
 bot.onText(/\/start(.*)/, async (msg, match) => {
   const chatId    = String(msg.chat.id);
   const uid       = String(msg.from.id);
@@ -254,11 +254,9 @@ bot.onText(/\/start(.*)/, async (msg, match) => {
   const username  = msg.from.username   || '';
   const refCode   = (match[1] || '').trim();
 
-  // Генерируем одноразовый токен
   const token = crypto.randomBytes(20).toString('hex');
-  const expires = Date.now() + 10 * 60 * 1000; // 10 минут
+  const expires = Date.now() + 10 * 60 * 1000;
 
-  // Сохраняем токен в Firestore
   await fsSet(`loginTokens/${token}`, {
     uid, chatId,
     name: (firstName + (lastName ? ' ' + lastName : '')).trim(),
@@ -267,7 +265,6 @@ bot.onText(/\/start(.*)/, async (msg, match) => {
     expires: String(expires)
   });
 
-  // Ссылка для авто-входа
   const loginUrl = `${DOJO_URL}?token=${token}${refCode ? '&ref=' + refCode : ''}`;
 
   await bot.sendMessage(chatId,
@@ -298,7 +295,7 @@ async function sendMsg(chatId, text, btnText = '✓ Открыть DOJO') {
   }
 }
 
-// ── CRON: 9:00 МСК (кроме среды) ────────────────
+// ── CRON: 8:00 МСК (кроме среды) ────────────────
 cron.schedule('0 5 * * 0,1,2,4,5,6', async () => {
   console.log('[CRON] Morning...');
   const users  = await getAllUsers();
@@ -311,7 +308,6 @@ cron.schedule('0 5 * * 0,1,2,4,5,6', async () => {
       `☀️ *Доброе утро, ${name}!*\n\n` +
       `💡 *Мысль дня:*\n_${THOUGHTS[idx]}_\n\n` +
       `❓ *Вопрос на сегодня:*\n${QUESTIONS[idx % QUESTIONS.length]}${streak}`;
-    // Утром — только вдохновение, без ссылки на чеклист
     try {
       await bot.sendMessage(u.chatId, text, { parse_mode: 'Markdown' });
       await new Promise(r => setTimeout(r, 150));
@@ -321,7 +317,7 @@ cron.schedule('0 5 * * 0,1,2,4,5,6', async () => {
   console.log(`[CRON] Morning: ${sent}/${users.length}`);
 }, { timezone: 'UTC' });
 
-// ── CRON: 9:00 МСК среда — цели ─────────────────
+// ── CRON: 8:00 МСК среда — цели ─────────────────
 cron.schedule('0 5 * * 3', async () => {
   console.log('[CRON] Wednesday goals...');
   const users = await getAllUsers();
@@ -344,37 +340,121 @@ cron.schedule('0 5 * * 3', async () => {
   console.log(`[CRON] Goals: ${sent}/${users.length}`);
 }, { timezone: 'UTC' });
 
-// ── CRON: 20:00 МСК — умные уведомления ─────────
+// ── CRON: 19:00 МСК — умные уведомления ─────────
 cron.schedule('0 16 * * *', async () => {
   console.log('[CRON] Evening...');
   const users = await getAllUsers();
   let sent = 0;
+
   for (const u of users) {
-    const name   = u.name.split(' ')[0];
+    const name = u.name.split(' ')[0];
+
+    // ── MILESTONE: поздравления за серию ──────────
+    if (u.streak === 7) {
+      await sendMsg(u.chatId,
+        `🔥 *${name}, 7 дней подряд!*\n\n` +
+        `Ты прошёл первый барьер.\n` +
+        `Большинство людей не доходят даже до этого момента.\n\n` +
+        `Это уже не случайность — это характер.`,
+        '✓ Открыть DOJO'
+      );
+      sent++;
+      continue;
+    }
+
+    if (u.streak === 14) {
+      await sendMsg(u.chatId,
+        `⚡ *${name}, 14 дней без пропусков!*\n\n` +
+        `Две недели последовательных действий.\n` +
+        `Нейронная связь уже формируется — твой мозг начинает воспринимать это как норму.\n\n` +
+        `Половина пути к настоящей привычке пройдена.`,
+        '✓ Открыть DOJO'
+      );
+      sent++;
+      continue;
+    }
+
+    if (u.streak === 21) {
+      await sendMsg(u.chatId,
+        `🏆 *${name}, 21 день — точка невозврата!*\n\n` +
+        `Учёные называют 21 день минимальным порогом формирования привычки.\n` +
+        `Ты его прошёл.\n\n` +
+        `Теперь это часть тебя. Продолжай — дальше становится только легче.`,
+        '✓ Открыть DOJO'
+      );
+      sent++;
+      continue;
+    }
+
+    if (u.streak === 30) {
+      await sendMsg(u.chatId,
+        `🥋 *${name}, 30 дней. Это уже образ жизни.*\n\n` +
+        `Месяц ежедневной работы над собой.\n` +
+        `Ты входишь в 1% людей которые не просто ставят цели — а следуют системе каждый день.\n\n` +
+        `Твоя команда видит это. Продолжай.`,
+        '✓ Открыть DOJO'
+      );
+      // Уведомляем лидера о достижении партнёра
+      if (u.invitedBy) {
+        const allUsers = await getAllUsers();
+        const leader = allUsers.find(l => l.uid === u.invitedBy);
+        if (leader && leader.chatId) {
+          await sendMsg(
+            leader.chatId,
+            `🏆 *Твой партнёр достиг 30 дней!*\n\n` +
+            `👤 *${u.name}* только что закрыл серию в 30 дней в DOJO.\n` +
+            `Напиши ему — такие моменты важно отмечать лично.`,
+            '📊 Кабинет лидера'
+          );
+        }
+      }
+      sent++;
+      continue;
+    }
+
+    // ── ОБЫЧНАЯ ЛОГИКА ────────────────────────────
     const absent = getDaysAbsent(u.lastDate);
     let text = null;
 
     if (absent === 0) {
-      // Активен сегодня — напоминаем заполнить чеклист
       text = `📋 *${name}, как прошёл день?*\n\nЗайди и отметь что сделал сегодня — займёт 2 минуты.\nСерия продолжается 👇`;
     }
-    else if (absent === 1) text = `🎯 *${name}, ещё не поздно*\n\nОтметь хотя бы одно действие — и день засчитан.\n2 минуты. Серия продолжается 👇`;
-    else if (absent <= 3)  text = `⚡ *${name}, ты пропал на ${absent} дня*\n\nЧто произошло? Серия прервалась, но Momentum ещё можно восстановить 👇`;
-    else if (absent <= 6)  text = `🔴 *${name}, уже ${absent} дней без DOJO*\n\nПотерял фокус? Это бывает.\nОдин шаг — и ты снова в системе 👇`;
+    else if (absent === 1) {
+      text = `🎯 *${name}, ещё не поздно*\n\nОтметь хотя бы одно действие — и день засчитан.\n2 минуты. Серия продолжается 👇`;
+    }
+    else if (absent <= 3) {
+      text = `⚡ *${name}, ты пропал на ${absent} дня*\n\nЧто произошло? Серия прервалась, но Momentum ещё можно восстановить 👇`;
+    }
+    else if (absent <= 6) {
+      text = `🔴 *${name}, уже ${absent} дней без DOJO*\n\nПотерял фокус? Это бывает.\nОдин шаг — и ты снова в системе 👇`;
+    }
     else if (absent === 7) {
       text = `❗ *${name}, прошла целая неделя*\n\n7 дней — это уже не пауза. Это выбор.\nВернись прямо сейчас 👇`;
-      // Уведомить лидера
       if (u.invitedBy) {
-        const leader = (await getAllUsers()).find(l => l.uid === u.invitedBy);
-        if (leader?.chatId) await sendMsg(leader.chatId, `⚠️ *Партнёр пропал*\n\n👤 *${u.name}* не заходил в DOJO уже *7 дней*.\nВозможно стоит написать лично.`, '📊 Кабинет лидера');
+        const allUsers = await getAllUsers();
+        const leader = allUsers.find(l => l.uid === u.invitedBy);
+        if (leader && leader.chatId) {
+          await sendMsg(leader.chatId,
+            `⚠️ *Партнёр пропал*\n\n👤 *${u.name}* не заходил в DOJO уже *7 дней*.\nВозможно стоит написать лично.`,
+            '📊 Кабинет лидера'
+          );
+        }
       }
     }
-    else if (absent <= 13) text = `😶 *${name}, тебя нет уже ${absent} дней*\n\nВсё в порядке? Мы здесь 👇`;
+    else if (absent <= 13) {
+      text = `😶 *${name}, тебя нет уже ${absent} дней*\n\nВсё в порядке? Мы здесь 👇`;
+    }
     else if (absent === 14) {
       text = `🤝 *${name}, 2 недели*\n\nНужна помощь? Напиши своему лидеру.\nИли просто открой DOJO — иногда достаточно одного шага 👇`;
       if (u.invitedBy) {
-        const leader = (await getAllUsers()).find(l => l.uid === u.invitedBy);
-        if (leader?.chatId) await sendMsg(leader.chatId, `⚠️ *${u.name}* не заходил уже *14 дней*.\nНужна твоя помощь.`, '📊 Кабинет лидера');
+        const allUsers = await getAllUsers();
+        const leader = allUsers.find(l => l.uid === u.invitedBy);
+        if (leader && leader.chatId) {
+          await sendMsg(leader.chatId,
+            `⚠️ *${u.name}* не заходил уже *14 дней*.\nНужна твоя помощь.`,
+            '📊 Кабинет лидера'
+          );
+        }
       }
     }
     else {
@@ -384,6 +464,7 @@ cron.schedule('0 16 * * *', async () => {
 
     if (text && await sendMsg(u.chatId, text, '✓ Заполнить чеклист')) sent++;
   }
+
   console.log(`[CRON] Evening: ${sent}/${users.length}`);
 }, { timezone: 'UTC' });
 
