@@ -299,7 +299,7 @@ async function sendMsg(chatId, text, btnText = '✓ Открыть DOJO') {
 }
 
 // ── CRON: 9:00 МСК (кроме среды) ────────────────
-cron.schedule('0 6 * * 0,1,2,4,5,6', async () => {
+cron.schedule('0 5 * * 0,1,2,4,5,6', async () => {
   console.log('[CRON] Morning...');
   const users  = await getAllUsers();
   const idx    = getDayIndex();
@@ -322,7 +322,7 @@ cron.schedule('0 6 * * 0,1,2,4,5,6', async () => {
 }, { timezone: 'UTC' });
 
 // ── CRON: 9:00 МСК среда — цели ─────────────────
-cron.schedule('0 6 * * 3', async () => {
+cron.schedule('0 5 * * 3', async () => {
   console.log('[CRON] Wednesday goals...');
   const users = await getAllUsers();
   let sent = 0;
@@ -345,7 +345,7 @@ cron.schedule('0 6 * * 3', async () => {
 }, { timezone: 'UTC' });
 
 // ── CRON: 20:00 МСК — умные уведомления ─────────
-cron.schedule('0 17 * * *', async () => {
+cron.schedule('0 16 * * *', async () => {
   console.log('[CRON] Evening...');
   const users = await getAllUsers();
   let sent = 0;
