@@ -434,6 +434,13 @@ cron.schedule('0 14 * * 0', async () => {
 // ── EXPRESS ──────────────────────────────────────
 const app = express();
 app.use(express.json());
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
 
 // Keep-alive
 app.get('/', (req, res) => res.send('🥋 DOJO Bot · ' + new Date().toISOString()));
