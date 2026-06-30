@@ -295,7 +295,19 @@ cron.schedule('0 5 * * 3', async () => {
   let sent = 0;
   for (const u of users) {
     const g = u.goal || {};
-    if (!g.maingoal && !g.dream) continue;
+    if (!g.maingoal && !g.dream) {
+  const name = u.name.split(' ')[0];
+  await sendMsg(u.chatId,
+    `📝 *${name}, ты ещё не записал свои цели*\n\n` +
+    `Каждую среду партнёры получают напоминание о своих целях и мечтах.\n\n` +
+    `Ты пропускаешь это — потому что цели ещё не заполнены.\n\n` +
+    `Зайди в DOJO и запиши — займёт 5 минут.\n` +
+    `Это то что будет держать тебя в движении когда захочется остановиться 👇`,
+    '✓ Заполнить цели'
+  );
+  sent++;
+  continue;
+}
     const name = u.name.split(' ')[0];
     let goalLines = '';
     if (g.income)   goalLines += `💰 *Цель по доходу:* ${g.income}\n`;
