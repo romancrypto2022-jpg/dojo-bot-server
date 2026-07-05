@@ -264,7 +264,12 @@ bot.onText(/\/start(.*)/, async (msg, match) => {
       `Это займёт 3 минуты — и система начнёт работать на тебя.`,
       {
         parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: [[{ text: '🚀 Войти в DOJO', url: loginUrl }]] }
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🚀 Войти в DOJO', url: loginUrl }],
+            [{ text: '💬 Чат клана Самурай', url: 'https://t.me/+SlFxmMLiASI5NmMy' }]
+          ]
+        }
       }
     );
   } catch(e) { console.error('Start error:', e.message); }
