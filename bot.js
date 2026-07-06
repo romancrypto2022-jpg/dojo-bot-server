@@ -275,18 +275,34 @@ bot.onText(/\/start(.*)/, async (msg, match) => {
   } catch(e) { console.error('Start error:', e.message); }
 });
 
+// ── ДИАГНОСТИКА: проверить что бот жив на новом коде и видит твою роль ──
+bot.onText(/^\/whoami/i, async (msg) => {
+  const uid = String(msg.from.id);
+  const chatId = String(msg.chat.id);
+  const check = await checkAdmin(uid);
+  await bot.sendMessage(chatId,
+    `🔍 *Диагностика*\n\nTelegram ID: \`${uid}\`\nАдмин: ${check.ok ? '✅ да' : '❌ нет'}\n${check.reason ? check.reason : ''}`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
 // ── РАССЫЛКА ВСЕМ УЧАСТНИКАМ ──────────────────────
 // /рассылка <текст> — можно отправить как текстом, так и подписью к фото.
 // Перед отправкой всем — обязательное подтверждение /подтвердить (защита от опечатки/случайного нажатия).
 const BROADCAST_CMD_RE = /^\/(рассылка|broadcast)\s+([\s\S]+)/i;
 const pendingBroadcasts = new Map(); // chatId -> { text, photoFileId, expires }
 
-async function isAdmin(uid) {
+async function checkAdmin(uid) {
   try {
     const doc = await fsGet(`users/${uid}`);
+    if (!doc) return { ok: false, reason: 'Документ пользователя не найден в Firestore (fsGet вернул пусто).' };
     const role = doc?.fields?.role?.stringValue;
-    return role === 'admin';
-  } catch(e) { console.error('isAdmin error:', e.message); return false; }
+    if (role !== 'admin') return { ok: false, reason: `Роль сейчас: "${role || '(пусто)'}" — нужно ровно "admin".` };
+    return { ok: true };
+  } catch(e) {
+    console.error('checkAdmin error:', e.message);
+    return { ok: false, reason: `Ошибка при проверке роли: ${e.message}` };
+  }
 }
 
 async function broadcastToAll(text, photoFileId) {
@@ -313,7 +329,11 @@ async function broadcastToAll(text, photoFileId) {
 bot.onText(BROADCAST_CMD_RE, async (msg, match) => {
   const uid = String(msg.from.id);
   const chatId = String(msg.chat.id);
-  if (!(await isAdmin(uid))) return; // тихо игнорируем, если не админ
+  const check = await checkAdmin(uid);
+  if (!check.ok) {
+    await bot.sendMessage(chatId, `⛔ Рассылка недоступна.\n${check.reason}\n\nТвой Telegram ID: ${uid}`);
+    return;
+  }
 
   const text = match[2].trim();
   pendingBroadcasts.set(chatId, { text, photoFileId: null, expires: Date.now() + 2 * 60 * 1000 });
@@ -333,7 +353,11 @@ bot.on('photo', async (msg) => {
 
   const uid = String(msg.from.id);
   const chatId = String(msg.chat.id);
-  if (!(await isAdmin(uid))) return;
+  const check = await checkAdmin(uid);
+  if (!check.ok) {
+    await bot.sendMessage(chatId, `⛔ Рассылка недоступна.\n${check.reason}\n\nТвой Telegram ID: ${uid}`);
+    return;
+  }
 
   const text = match[2].trim();
   const photoFileId = msg.photo[msg.photo.length - 1].file_id; // самое высокое разрешение
@@ -349,7 +373,11 @@ bot.on('photo', async (msg) => {
 bot.onText(/^\/подтвердить/i, async (msg) => {
   const uid = String(msg.from.id);
   const chatId = String(msg.chat.id);
-  if (!(await isAdmin(uid))) return;
+  const check = await checkAdmin(uid);
+  if (!check.ok) {
+    await bot.sendMessage(chatId, `⛔ ${check.reason}`);
+    return;
+  }
 
   const pending = pendingBroadcasts.get(chatId);
   if (!pending || Date.now() > pending.expires) {
