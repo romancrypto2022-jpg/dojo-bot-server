@@ -275,6 +275,32 @@ bot.onText(/\/start(.*)/, async (msg, match) => {
   } catch(e) { console.error('Start error:', e.message); }
 });
 
+// ── ВОССТАНОВЛЕНИЕ РАЗМЕТКИ ──────────────────────
+// Когда ссылку/жирный/курсив вставляют через встроенный инструмент форматирования Telegram
+// (а не набирают вручную звёздочками/скобками), Telegram отдаёт боту "голый" текст +
+// отдельно диапазоны символов с типом форматирования (entities). Без этой функции такие
+// ссылки/акценты молча терялись бы при пересылке всем — текст оставался бы плоским.
+function entitiesToMarkdown(text, entities) {
+  if (!text || !entities || entities.length === 0) return text || '';
+  // Вставляем разметку с конца строки к началу — чтобы уже вставленные символы
+  // не сдвигали offset'ы ещё не обработанных entity.
+  const sorted = [...entities].sort((a, b) => (b.offset - a.offset) || (b.length - a.length));
+  let result = text;
+  for (const e of sorted) {
+    const start = e.offset;
+    const end = e.offset + e.length;
+    const chunk = result.slice(start, end);
+    let wrapped;
+    if (e.type === 'text_link' && e.url) wrapped = `[${chunk}](${e.url})`;
+    else if (e.type === 'bold') wrapped = `*${chunk}*`;
+    else if (e.type === 'italic') wrapped = `_${chunk}_`;
+    else if (e.type === 'code') wrapped = `\`${chunk}\``;
+    else continue; // обычный "url"-тип Telegram и так сам подсвечивает как ссылку — не трогаем
+    result = result.slice(0, start) + wrapped + result.slice(end);
+  }
+  return result;
+}
+
 // ── ДИАГНОСТИКА: проверить что бот жив на новом коде и видит твою роль ──
 bot.onText(/^\/whoami/i, async (msg) => {
   const uid = String(msg.from.id);
@@ -335,7 +361,9 @@ bot.onText(BROADCAST_CMD_RE, async (msg, match) => {
     return;
   }
 
-  const text = match[2].trim();
+  const mdText = entitiesToMarkdown(msg.text, msg.entities);
+  const mdMatch = mdText.match(BROADCAST_CMD_RE);
+  const text = (mdMatch ? mdMatch[2] : match[2]).trim();
   pendingBroadcasts.set(chatId, { text, photoFileId: null, expires: Date.now() + 2 * 60 * 1000 });
 
   await bot.sendMessage(chatId,
@@ -359,7 +387,9 @@ bot.on('photo', async (msg) => {
     return;
   }
 
-  const text = match[2].trim();
+  const mdCaption = entitiesToMarkdown(msg.caption, msg.caption_entities);
+  const mdMatch = mdCaption.match(BROADCAST_CMD_RE);
+  const text = (mdMatch ? mdMatch[2] : match[2]).trim();
   const photoFileId = msg.photo[msg.photo.length - 1].file_id; // самое высокое разрешение
   pendingBroadcasts.set(chatId, { text, photoFileId, expires: Date.now() + 2 * 60 * 1000 });
 
