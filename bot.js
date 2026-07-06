@@ -275,6 +275,103 @@ bot.onText(/\/start(.*)/, async (msg, match) => {
   } catch(e) { console.error('Start error:', e.message); }
 });
 
+// ── РАССЫЛКА ВСЕМ УЧАСТНИКАМ ──────────────────────
+// /рассылка <текст> — можно отправить как текстом, так и подписью к фото.
+// Перед отправкой всем — обязательное подтверждение /подтвердить (защита от опечатки/случайного нажатия).
+const BROADCAST_CMD_RE = /^\/(рассылка|broadcast)\s+([\s\S]+)/i;
+const pendingBroadcasts = new Map(); // chatId -> { text, photoFileId, expires }
+
+async function isAdmin(uid) {
+  try {
+    const doc = await fsGet(`users/${uid}`);
+    const role = doc?.fields?.role?.stringValue;
+    return role === 'admin';
+  } catch(e) { console.error('isAdmin error:', e.message); return false; }
+}
+
+async function broadcastToAll(text, photoFileId) {
+  const users = await getAllUsers();
+  let sent = 0, failed = 0;
+  for (const u of users) {
+    try {
+      if (photoFileId) {
+        await bot.sendPhoto(u.chatId, photoFileId, { caption: text, parse_mode: 'Markdown' });
+      } else {
+        await bot.sendMessage(u.chatId, text, { parse_mode: 'Markdown' });
+      }
+      sent++;
+    } catch(e) {
+      failed++;
+      console.error(`Broadcast error ${u.chatId}:`, e.message);
+    }
+    await new Promise(r => setTimeout(r, 120)); // не упираемся в лимиты Telegram
+  }
+  return { sent, failed, total: users.length };
+}
+
+// Текстовая рассылка: /рассылка Текст объявления...
+bot.onText(BROADCAST_CMD_RE, async (msg, match) => {
+  const uid = String(msg.from.id);
+  const chatId = String(msg.chat.id);
+  if (!(await isAdmin(uid))) return; // тихо игнорируем, если не админ
+
+  const text = match[2].trim();
+  pendingBroadcasts.set(chatId, { text, photoFileId: null, expires: Date.now() + 2 * 60 * 1000 });
+
+  await bot.sendMessage(chatId,
+    `📢 *Предпросмотр рассылки:*\n\n${text}\n\n` +
+    `Это уйдёт *всем участникам* DOJO. Отправь /подтвердить в течение 2 минут, чтобы разослать, или /отмена чтобы отменить.`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// Рассылка с фото: отправь боту фото, подпись начинается с /рассылка
+bot.on('photo', async (msg) => {
+  if (!msg.caption) return;
+  const match = msg.caption.match(BROADCAST_CMD_RE);
+  if (!match) return;
+
+  const uid = String(msg.from.id);
+  const chatId = String(msg.chat.id);
+  if (!(await isAdmin(uid))) return;
+
+  const text = match[2].trim();
+  const photoFileId = msg.photo[msg.photo.length - 1].file_id; // самое высокое разрешение
+  pendingBroadcasts.set(chatId, { text, photoFileId, expires: Date.now() + 2 * 60 * 1000 });
+
+  await bot.sendPhoto(chatId, photoFileId, {
+    caption: `📢 *Предпросмотр рассылки:*\n\n${text}\n\n` +
+      `Это уйдёт *всем участникам* DOJO с этим фото. Отправь /подтвердить в течение 2 минут, чтобы разослать, или /отмена чтобы отменить.`,
+    parse_mode: 'Markdown'
+  });
+});
+
+bot.onText(/^\/подтвердить/i, async (msg) => {
+  const uid = String(msg.from.id);
+  const chatId = String(msg.chat.id);
+  if (!(await isAdmin(uid))) return;
+
+  const pending = pendingBroadcasts.get(chatId);
+  if (!pending || Date.now() > pending.expires) {
+    await bot.sendMessage(chatId, '⏱ Нет активной рассылки для подтверждения (или истекли 2 минуты). Отправь /рассылка заново.');
+    pendingBroadcasts.delete(chatId);
+    return;
+  }
+  pendingBroadcasts.delete(chatId);
+
+  await bot.sendMessage(chatId, '📤 Рассылаю...');
+  const { sent, failed, total } = await broadcastToAll(pending.text, pending.photoFileId);
+  await bot.sendMessage(chatId, `✅ *Готово.*\n\nДоставлено: *${sent}* из *${total}*\nОшибок: *${failed}*`, { parse_mode: 'Markdown' });
+});
+
+bot.onText(/^\/отмена/i, async (msg) => {
+  const chatId = String(msg.chat.id);
+  if (pendingBroadcasts.has(chatId)) {
+    pendingBroadcasts.delete(chatId);
+    await bot.sendMessage(chatId, '❌ Рассылка отменена.');
+  }
+});
+
 // ── ОТПРАВИТЬ СООБЩЕНИЕ ──────────────────────────
 async function sendMsg(chatId, text, btnText = '✓ Открыть DOJO', btnUrl = DOJO_URL) {
   try {
