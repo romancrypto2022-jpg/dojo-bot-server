@@ -317,6 +317,7 @@ bot.onText(/^\/whoami/i, async (msg) => {
 // Перед отправкой всем — обязательное подтверждение /подтвердить (защита от опечатки/случайного нажатия).
 const BROADCAST_CMD_RE = /^\/(рассылка|broadcast)\s+([\s\S]+)/i;
 const pendingBroadcasts = new Map(); // chatId -> { text, photoFileId, expires }
+const recentPhotos = new Map(); // chatId -> { fileId, expires } — для случая "фото отдельно, текст отдельно" (подпись >1024 символов)
 
 async function checkAdmin(uid) {
   try {
@@ -331,16 +332,31 @@ async function checkAdmin(uid) {
   }
 }
 
+const CAPTION_LIMIT = 1000; // с запасом от жёсткого лимита Telegram в 1024 символа
+
+// Единая точка отправки — используется и в реальной рассылке, и в предпросмотре,
+// чтобы предпросмотр честно показывал, как объявление реально придёт людям.
+async function sendAnnouncement(chatId, text, photoFileId, extraNote = '') {
+  const fullText = extraNote ? `${extraNote}\n\n${text}` : text;
+  if (photoFileId) {
+    if (fullText.length <= CAPTION_LIMIT) {
+      await bot.sendPhoto(chatId, photoFileId, { caption: fullText, parse_mode: 'Markdown' });
+    } else {
+      // Текст не влезает в подпись к фото — фото без подписи, текст отдельным сообщением следом.
+      await bot.sendPhoto(chatId, photoFileId);
+      await bot.sendMessage(chatId, fullText, { parse_mode: 'Markdown' });
+    }
+  } else {
+    await bot.sendMessage(chatId, fullText, { parse_mode: 'Markdown' });
+  }
+}
+
 async function broadcastToAll(text, photoFileId) {
   const users = await getAllUsers();
   let sent = 0, failed = 0;
   for (const u of users) {
     try {
-      if (photoFileId) {
-        await bot.sendPhoto(u.chatId, photoFileId, { caption: text, parse_mode: 'Markdown' });
-      } else {
-        await bot.sendMessage(u.chatId, text, { parse_mode: 'Markdown' });
-      }
+      await sendAnnouncement(u.chatId, text, photoFileId);
       sent++;
     } catch(e) {
       failed++;
@@ -364,23 +380,55 @@ bot.onText(BROADCAST_CMD_RE, async (msg, match) => {
   const mdText = entitiesToMarkdown(msg.text, msg.entities);
   const mdMatch = mdText.match(BROADCAST_CMD_RE);
   const text = (mdMatch ? mdMatch[2] : match[2]).trim();
-  pendingBroadcasts.set(chatId, { text, photoFileId: null, expires: Date.now() + 2 * 60 * 1000 });
 
-  await bot.sendMessage(chatId,
-    `📢 *Предпросмотр рассылки:*\n\n${text}\n\n` +
-    `Это уйдёт *всем участникам* DOJO. Отправь /подтвердить в течение 2 минут, чтобы разослать, или /отмена чтобы отменить.`,
-    { parse_mode: 'Markdown' }
-  );
+  // Если недавно (последние 10 минут) присылал фото — прикрепляем автоматически.
+  // Так текст остаётся без ограничения в 1024 символа (лимит только у подписи к фото).
+  const recent = recentPhotos.get(chatId);
+  const photoFileId = (recent && Date.now() < recent.expires) ? recent.fileId : null;
+  if (photoFileId) recentPhotos.delete(chatId);
+
+  pendingBroadcasts.set(chatId, { text, photoFileId, expires: Date.now() + 2 * 60 * 1000 });
+
+  const previewNote = photoFileId
+    ? '📢 Предпросмотр рассылки (с прикреплённым недавним фото). Так это увидят участники:'
+    : '📢 Предпросмотр рассылки. Так это увидят участники:';
+  await sendAnnouncement(chatId, text, photoFileId, previewNote);
+  await bot.sendMessage(chatId, 'Это уйдёт *всем участникам* DOJO. Отправь /подтвердить в течение 2 минут, чтобы разослать, или /отмена чтобы отменить.', { parse_mode: 'Markdown' });
 });
 
 // Рассылка с фото: отправь боту фото, подпись начинается с /рассылка
 bot.on('photo', async (msg) => {
-  if (!msg.caption) return;
-  const match = msg.caption.match(BROADCAST_CMD_RE);
-  if (!match) return;
-
+  const caption = msg.caption || '';
+  const match = caption.match(BROADCAST_CMD_RE);
   const uid = String(msg.from.id);
   const chatId = String(msg.chat.id);
+
+  if (!match) {
+    // Диагностика — только для админа и только если похоже, что он пытался разослать
+    // (не спамим обычных партнёров, если они просто прислали фото без команды).
+    const check = await checkAdmin(uid);
+    if (check.ok) {
+      const photoFileId = msg.photo[msg.photo.length - 1].file_id;
+      recentPhotos.set(chatId, { fileId: photoFileId, expires: Date.now() + 10 * 60 * 1000 });
+
+      if (!msg.caption) {
+        await bot.sendMessage(chatId,
+          `📸 Фото получил и запомнил на 10 минут.\n\n` +
+          `Если хотел прикрепить его к рассылке с длинным текстом — просто пришли теперь /рассылка Текст объявления обычным сообщением (без фото), и я приклею это фото автоматически.\n\n` +
+          `Если у фото была подпись длиннее *1024 символов* — Telegram мог её отрезать, поэтому я не увидел команду в подписи.`,
+          { parse_mode: 'Markdown' }
+        );
+      } else if (/рассылка|broadcast/i.test(caption)) {
+        await bot.sendMessage(chatId,
+          `📸 Фото запомнил. Подпись есть (${caption.length} симв.), но команда в ней не распозналась — подпись должна начинаться ровно с "/рассылка ".\n\n` +
+          `Можешь просто прислать /рассылка Текст отдельным сообщением — фото прикреплю автоматически.`,
+          { parse_mode: 'Markdown' }
+        );
+      }
+    }
+    return;
+  }
+
   const check = await checkAdmin(uid);
   if (!check.ok) {
     await bot.sendMessage(chatId, `⛔ Рассылка недоступна.\n${check.reason}\n\nТвой Telegram ID: ${uid}`);
@@ -393,11 +441,8 @@ bot.on('photo', async (msg) => {
   const photoFileId = msg.photo[msg.photo.length - 1].file_id; // самое высокое разрешение
   pendingBroadcasts.set(chatId, { text, photoFileId, expires: Date.now() + 2 * 60 * 1000 });
 
-  await bot.sendPhoto(chatId, photoFileId, {
-    caption: `📢 *Предпросмотр рассылки:*\n\n${text}\n\n` +
-      `Это уйдёт *всем участникам* DOJO с этим фото. Отправь /подтвердить в течение 2 минут, чтобы разослать, или /отмена чтобы отменить.`,
-    parse_mode: 'Markdown'
-  });
+  await sendAnnouncement(chatId, text, photoFileId, '📢 Предпросмотр рассылки. Так это увидят участники:');
+  await bot.sendMessage(chatId, 'Это уйдёт *всем участникам* DOJO. Отправь /подтвердить в течение 2 минут, чтобы разослать, или /отмена чтобы отменить.', { parse_mode: 'Markdown' });
 });
 
 bot.onText(/^\/подтвердить/i, async (msg) => {
