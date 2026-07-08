@@ -61,6 +61,7 @@ async function getAllUsers() {
     return {
       uid:       f.uid?.stringValue,
       name:      f.name?.stringValue || 'Партнёр',
+      username:  f.username?.stringValue || '',
       chatId:    f.chatId?.stringValue,
       streak:    parseInt(f.currentStreak?.integerValue || 0),
       lastDate:  f.lastActiveDate?.stringValue || '',
@@ -447,7 +448,9 @@ bot.onText(/^\/(заблокировали|blocked)/i, async (msg) => {
   }
   const list = blocked.map(u => {
     const since = u.botBlockedAt ? new Date(u.botBlockedAt).toLocaleDateString('ru') : '?';
-    return `• ${u.name} — с ${since}`;
+    const nameLink = `[${u.name}](tg://user?id=${u.chatId})`;
+    const usernamePart = u.username ? ` (@${u.username})` : '';
+    return `• ${nameLink}${usernamePart} — с ${since}`;
   }).join('\n');
   await bot.sendMessage(chatId,
     `🚫 *Заблокировали бота / удалили аккаунт: ${blocked.length}*\n\n${list}\n\n` +
