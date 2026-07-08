@@ -43,6 +43,15 @@ async function fsSet(path, fields) {
   } catch(e) { console.error('fsSet error:', e.message); }
 }
 
+async function fsDelete(path) {
+  try {
+    await fetch(
+      `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT}/databases/(default)/documents/${path}`,
+      { method: 'DELETE' }
+    );
+  } catch(e) { console.error('fsDelete error:', e.message); }
+}
+
 async function getAllUsers() {
   const data = await fsGet('users');
   if (!data?.documents) return [];
@@ -362,6 +371,60 @@ bot.onText(/^\/whoami/i, async (msg) => {
   const check = await checkAdmin(uid);
   await bot.sendMessage(chatId,
     `🔍 *Диагностика*\n\nTelegram ID: \`${uid}\`\nАдмин: ${check.ok ? '✅ да' : '❌ нет'}\n${check.reason ? check.reason : ''}`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// ── ОДНОРАЗОВАЯ МИГРАЦИЯ: ключ недели аудита со старого (воскресного) формата ──
+// на новый (понедельничный, YYYY-MM-DD — тот же, что у чеклиста). Нужна один раз,
+// после того как в DOJO поправили getWeekKey(). Переносит записи ТЕКУЩЕЙ недели,
+// у кого они есть под старым ключом, под новый — без ручной работы для каждого партнёра.
+function getOldWeekKey(date){
+  const jan1 = new Date(date.getFullYear(),0,1);
+  const week = Math.ceil(((date-jan1)/86400000 + jan1.getDay()+1)/7);
+  return `${date.getFullYear()}-W${String(week).padStart(2,'0')}`;
+}
+bot.onText(/^\/migrate_audits/i, async (msg) => {
+  const uid = String(msg.from.id);
+  const chatId = String(msg.chat.id);
+  const check = await checkAdmin(uid);
+  if (!check.ok) { await bot.sendMessage(chatId, `⛔ ${check.reason}`); return; }
+
+  const now = new Date();
+  const oldKey = getOldWeekKey(now);
+  const newKey = getMondayOf(now).toISOString().split('T')[0];
+  await bot.sendMessage(chatId, `🔧 Переношу записи аудита: *${oldKey}* → *${newKey}*...`, { parse_mode: 'Markdown' });
+
+  const users = await getAllUsers();
+  let migrated = 0, skipped = 0, errors = 0;
+  for (const u of users) {
+    try {
+      const oldDoc = await fsGet(`weeklyAudits/${u.uid}_${oldKey}`);
+      if (!oldDoc?.fields) { skipped++; continue; }
+      const f = oldDoc.fields;
+      const data = {
+        uid: f.uid?.stringValue || u.uid,
+        week: newKey,
+        weekLabel: f.weekLabel?.stringValue || '',
+        savedAt: f.savedAt?.stringValue || '',
+        invites: parseInt(f.invites?.integerValue || 0),
+        meetings: parseInt(f.meetings?.integerValue || 0),
+        presents: parseInt(f.presents?.integerValue || 0),
+        victory: f.victory?.stringValue || '',
+        obstacle: f.obstacle?.stringValue || '',
+        nextweek: f.nextweek?.stringValue || '',
+      };
+      await fsSet(`weeklyAudits/${u.uid}_${newKey}`, data);
+      await fsDelete(`weeklyAudits/${u.uid}_${oldKey}`);
+      migrated++;
+    } catch(e) {
+      console.error('migrate_audits error for', u.uid, e.message);
+      errors++;
+    }
+  }
+
+  await bot.sendMessage(chatId,
+    `✅ *Готово.*\n\nПеренесено: *${migrated}*\nНечего было переносить: *${skipped}*\nОшибок: *${errors}*\n\nЭту команду больше не нужно вызывать снова — она разовая.`,
     { parse_mode: 'Markdown' }
   );
 });
