@@ -432,6 +432,9 @@ bot.onText(/^\/migrate_audits/i, async (msg) => {
 
 // Список тех, кто заблокировал бота или удалил аккаунт — статус пишется автоматически
 // при каждой неудачной отправке (ежедневные уведомления, рассылки).
+function escapeHtml(s){
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
 bot.onText(/^\/(заблокировали|blocked)/i, async (msg) => {
   const uid = String(msg.from.id);
   const chatId = String(msg.chat.id);
@@ -446,17 +449,27 @@ bot.onText(/^\/(заблокировали|blocked)/i, async (msg) => {
     await bot.sendMessage(chatId, '✅ Пока никто не заблокировал бота (по данным, накопленным при рассылках).');
     return;
   }
+  // HTML вместо Markdown — имена партнёров могут содержать скобки/подчёркивания/звёздочки,
+  // которые ломают разбор legacy-Markdown и раньше приводили к тихому падению отправки.
   const list = blocked.map(u => {
     const since = u.botBlockedAt ? new Date(u.botBlockedAt).toLocaleDateString('ru') : '?';
-    const nameLink = `[${u.name}](tg://user?id=${u.chatId})`;
-    const usernamePart = u.username ? ` (@${u.username})` : '';
+    const safeName = escapeHtml(u.name);
+    const nameLink = `<a href="tg://user?id=${u.chatId}">${safeName}</a>`;
+    const usernamePart = u.username ? ` (@${escapeHtml(u.username)})` : '';
     return `• ${nameLink}${usernamePart} — с ${since}`;
   }).join('\n');
-  await bot.sendMessage(chatId,
-    `🚫 *Заблокировали бота / удалили аккаунт: ${blocked.length}*\n\n${list}\n\n` +
-    `_Статус обновляется автоматически при каждой рассылке и ежедневных уведомлениях — новых блокировок пока не видно, если человек не получал сообщений после блокировки._`,
-    { parse_mode: 'Markdown' }
-  );
+  try {
+    await bot.sendMessage(chatId,
+      `🚫 <b>Заблокировали бота / удалили аккаунт: ${blocked.length}</b>\n\n${list}\n\n` +
+      `<i>Статус обновляется автоматически при каждой рассылке и ежедневных уведомлениях — новых блокировок пока не видно, если человек не получал сообщений после блокировки.</i>`,
+      { parse_mode: 'HTML' }
+    );
+  } catch(e) {
+    console.error('/заблокировали send error:', e.message);
+    // Запасной вариант без форматирования — чтобы команда никогда не падала молча.
+    const plainList = blocked.map(u => `• ${u.name}${u.username ? ' (@'+u.username+')' : ''} — с ${u.botBlockedAt ? new Date(u.botBlockedAt).toLocaleDateString('ru') : '?'}`).join('\n');
+    await bot.sendMessage(chatId, `🚫 Заблокировали бота / удалили аккаунт: ${blocked.length}\n\n${plainList}`);
+  }
 });
 
 // ── РАССЫЛКА ВСЕМ УЧАСТНИКАМ ──────────────────────
