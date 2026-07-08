@@ -29,11 +29,15 @@ async function fsSet(path, fields) {
   const body = { fields: {} };
   for (const [k, v] of Object.entries(fields)) {
     if (typeof v === 'number') body.fields[k] = { integerValue: v };
+    else if (typeof v === 'boolean') body.fields[k] = { booleanValue: v };
     else body.fields[k] = { stringValue: String(v ?? '') };
   }
+  // updateMask обязателен для частичного обновления — без него Firestore REST API
+  // заменяет ВЕСЬ документ только переданными полями, стирая всё остальное.
+  const mask = Object.keys(fields).map(k => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join('&');
   try {
     await fetch(
-      `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT}/databases/(default)/documents/${path}`,
+      `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT}/databases/(default)/documents/${path}?${mask}`,
       { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
     );
   } catch(e) { console.error('fsSet error:', e.message); }
@@ -52,6 +56,8 @@ async function getAllUsers() {
       streak:    parseInt(f.currentStreak?.integerValue || 0),
       lastDate:  f.lastActiveDate?.stringValue || '',
       invitedBy: f.invitedBy?.stringValue || null,
+      botBlocked:   f.botBlocked?.booleanValue || false,
+      botBlockedAt: f.botBlockedAt?.stringValue || null,
       goal: {
         income:   gf.income?.stringValue   || null,
         maingoal: gf.maingoal?.stringValue || null,
@@ -61,6 +67,52 @@ async function getAllUsers() {
       }
     };
   }).filter(u => u.chatId);
+}
+
+// ── Недельная статистика презентаций/подключений (для сверки "7 касаний") ──
+function getMondayOf(date) {
+  const d = new Date(date);
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+  d.setDate(diff);
+  return d;
+}
+async function getWeeklyPresentAndLaunched(uid) {
+  const monday = getMondayOf(new Date());
+  let totalPresent = 0, totalLaunched = 0;
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(monday);
+    d.setDate(d.getDate() + i);
+    const dateStr = d.toISOString().split('T')[0];
+    const doc = await fsGet(`dailyLogs/${uid}_${dateStr}`);
+    if (!doc?.fields) continue;
+    const actions = doc.fields.actions?.mapValue?.fields || {};
+    const qty     = doc.fields.qty?.mapValue?.fields || {};
+    if (actions.present?.booleanValue)  totalPresent  += parseInt(qty.present?.integerValue  || 1);
+    if (actions.launched?.booleanValue) totalLaunched += parseInt(qty.launched?.integerValue || 1);
+  }
+  return { totalPresent, totalLaunched };
+}
+
+// ── ОТСЛЕЖИВАНИЕ ЗАБЛОКИРОВАВШИХ / УДАЛИВШИХ АККАУНТ ──
+// Telegram при отправке возвращает конкретную ошибку в этих случаях — ловим её и
+// сохраняем факт в Firestore, чтобы это было видно прямо в базе, а не терялось в логах Railway.
+function isBlockedError(e) {
+  const msg = (e?.response?.body?.description || e?.message || '').toLowerCase();
+  return msg.includes('bot was blocked') ||
+         msg.includes('user is deactivated') ||
+         msg.includes('chat not found') ||
+         msg.includes('user not found');
+}
+
+async function markBotStatus(uid, blocked) {
+  if (!uid) return;
+  try {
+    await fsSet(`users/${uid}`, {
+      botBlocked: blocked,
+      botBlockedAt: blocked ? new Date().toISOString() : ''
+    });
+  } catch(e) { console.error('markBotStatus error:', e.message); }
 }
 
 // ── КОНТЕНТ ──────────────────────────────────────
@@ -244,6 +296,8 @@ bot.onText(/\/start(.*)/, async (msg, match) => {
   const username  = msg.from.username   || '';
   const refCode   = (match[1] || '').trim();
 
+  markBotStatus(uid, false); // не ждём — не критично, если случайно опоздает на пару секунд
+
   const token   = crypto.randomBytes(20).toString('hex');
   const expires = Date.now() + 10 * 60 * 1000;
 
@@ -312,6 +366,33 @@ bot.onText(/^\/whoami/i, async (msg) => {
   );
 });
 
+// Список тех, кто заблокировал бота или удалил аккаунт — статус пишется автоматически
+// при каждой неудачной отправке (ежедневные уведомления, рассылки).
+bot.onText(/^\/(заблокировали|blocked)/i, async (msg) => {
+  const uid = String(msg.from.id);
+  const chatId = String(msg.chat.id);
+  const check = await checkAdmin(uid);
+  if (!check.ok) {
+    await bot.sendMessage(chatId, `⛔ ${check.reason}`);
+    return;
+  }
+  const users = await getAllUsers();
+  const blocked = users.filter(u => u.botBlocked);
+  if (blocked.length === 0) {
+    await bot.sendMessage(chatId, '✅ Пока никто не заблокировал бота (по данным, накопленным при рассылках).');
+    return;
+  }
+  const list = blocked.map(u => {
+    const since = u.botBlockedAt ? new Date(u.botBlockedAt).toLocaleDateString('ru') : '?';
+    return `• ${u.name} — с ${since}`;
+  }).join('\n');
+  await bot.sendMessage(chatId,
+    `🚫 *Заблокировали бота / удалили аккаунт: ${blocked.length}*\n\n${list}\n\n` +
+    `_Статус обновляется автоматически при каждой рассылке и ежедневных уведомлениях — новых блокировок пока не видно, если человек не получал сообщений после блокировки._`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
 // ── РАССЫЛКА ВСЕМ УЧАСТНИКАМ ──────────────────────
 // /рассылка <текст> — можно отправить как текстом, так и подписью к фото.
 // Перед отправкой всем — обязательное подтверждение /подтвердить (защита от опечатки/случайного нажатия).
@@ -353,18 +434,20 @@ async function sendAnnouncement(chatId, text, photoFileId, extraNote = '') {
 
 async function broadcastToAll(text, photoFileId) {
   const users = await getAllUsers();
-  let sent = 0, failed = 0;
+  let sent = 0, failed = 0, blocked = 0;
   for (const u of users) {
     try {
       await sendAnnouncement(u.chatId, text, photoFileId);
       sent++;
+      if (u.botBlocked) await markBotStatus(u.uid, false); // раз доставилось — точно не заблокирован
     } catch(e) {
       failed++;
       console.error(`Broadcast error ${u.chatId}:`, e.message);
+      if (isBlockedError(e)) { blocked++; await markBotStatus(u.uid, true); }
     }
     await new Promise(r => setTimeout(r, 120)); // не упираемся в лимиты Telegram
   }
-  return { sent, failed, total: users.length };
+  return { sent, failed, blocked, total: users.length };
 }
 
 // Текстовая рассылка: /рассылка Текст объявления...
@@ -463,8 +546,11 @@ bot.onText(/^\/подтвердить/i, async (msg) => {
   pendingBroadcasts.delete(chatId);
 
   await bot.sendMessage(chatId, '📤 Рассылаю...');
-  const { sent, failed, total } = await broadcastToAll(pending.text, pending.photoFileId);
-  await bot.sendMessage(chatId, `✅ *Готово.*\n\nДоставлено: *${sent}* из *${total}*\nОшибок: *${failed}*`, { parse_mode: 'Markdown' });
+  const { sent, failed, blocked, total } = await broadcastToAll(pending.text, pending.photoFileId);
+  await bot.sendMessage(chatId,
+    `✅ *Готово.*\n\nДоставлено: *${sent}* из *${total}*\nОшибок: *${failed}*${blocked ? `\nИз них заблокировали/удалили бота: *${blocked}*` : ''}`,
+    { parse_mode: 'Markdown' }
+  );
 });
 
 bot.onText(/^\/отмена/i, async (msg) => {
@@ -488,6 +574,7 @@ async function sendMsg(chatId, text, btnText = '✓ Открыть DOJO', btnUrl
     return true;
   } catch(e) {
     console.error(`Send error ${chatId}:`, e.message);
+    if (isBlockedError(e)) await markBotStatus(chatId, true);
     return false;
   }
 }
@@ -665,6 +752,32 @@ cron.schedule('0 14 * * 0', async () => {
     if (await sendMsg(u.chatId, text, '📋 Пройти аудит')) sent++;
   }
   console.log(`[CRON] Audit: ${sent}/${users.length}`);
+}, { timezone: 'UTC' });
+
+// ── CRON: 18:00 МСК воскресенье — сверка "7 касаний" для наставников ──
+// 10+ презентаций за неделю без подключений — не ошибка, часто это нормальная часть
+// пути кандидата (2-5 встреч перед регистрацией). Наставник получает отдельное
+// уведомление, независимое от аудита, чтобы предложить сверку на консультации.
+const PRESENTATION_GAP_THRESHOLD = 10;
+cron.schedule('0 15 * * 0', async () => {
+  console.log('[CRON] Weekly 7-touches check...');
+  const users = await getAllUsers();
+  let sent = 0;
+  for (const u of users) {
+    if (!u.invitedBy) continue;
+    const mentor = users.find(m => m.uid === u.invitedBy);
+    if (!mentor?.chatId) continue;
+
+    const { totalPresent, totalLaunched } = await getWeeklyPresentAndLaunched(u.uid);
+    if (totalPresent >= PRESENTATION_GAP_THRESHOLD && totalLaunched === 0) {
+      const text =
+        `📊 *Ситуация по ${u.name}*\n\n` +
+        `За эту неделю: *${totalPresent}* презентаций, *0* подключений.\n\n` +
+        `Скорее всего, это нормально — по принципу «7 касаний» между презентацией и регистрацией обычно проходит несколько встреч. Но стоит свериться на консультации, чтобы синхронизироваться.`;
+      if (await sendMsg(mentor.chatId, text, '📊 Кабинет лидера')) sent++;
+    }
+  }
+  console.log(`[CRON] 7-touches check: ${sent} notifications sent`);
 }, { timezone: 'UTC' });
 
 // ── EXPRESS ──────────────────────────────────────
