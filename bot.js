@@ -104,6 +104,43 @@ async function getWeeklyPresentAndLaunched(uid) {
   return { totalPresent, totalLaunched };
 }
 
+// ── CRM: контакты, у которых сегодня подошла дата следующего касания ──
+// Фильтруем только по ownerUid (простое равенство — не требует композитного индекса),
+// остальное (дата <= сегодня) — на своей стороне, после получения результата.
+async function fsQueryByField(collectionId, field, value) {
+  const structuredQuery = {
+    from: [{ collectionId }],
+    where: {
+      fieldFilter: {
+        field: { fieldPath: field },
+        op: 'EQUAL',
+        value: { stringValue: value }
+      }
+    }
+  };
+  try {
+    const r = await fetch(
+      `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT}/databases/(default)/documents:runQuery`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ structuredQuery }) }
+    );
+    const data = await r.json();
+    return (Array.isArray(data) ? data : []).filter(d => d.document).map(d => d.document);
+  } catch(e) { console.error('fsQueryByField error:', e.message); return []; }
+}
+async function getCrmDueToday(uid) {
+  const todayStr = new Date().toISOString().split('T')[0];
+  const docs = await fsQueryByField('contacts', 'ownerUid', uid);
+  const due = [];
+  for (const doc of docs) {
+    const f = doc.fields || {};
+    const nextTouchDate = f.nextTouchDate?.stringValue || '';
+    if (nextTouchDate && nextTouchDate <= todayStr) {
+      due.push(f.firstLastName?.stringValue || 'Контакт');
+    }
+  }
+  return due;
+}
+
 // ── ОТСЛЕЖИВАНИЕ ЗАБЛОКИРОВАВШИХ / УДАЛИВШИХ АККАУНТ ──
 // Telegram при отправке возвращает конкретную ошибку в этих случаях — ловим её и
 // сохраняем факт в Firestore, чтобы это было видно прямо в базе, а не терялось в логах Railway.
@@ -652,9 +689,26 @@ async function sendMsg(chatId, text, btnText = '✓ Открыть DOJO', btnUrl
     await new Promise(r => setTimeout(r, 150));
     return true;
   } catch(e) {
-    console.error(`Send error ${chatId}:`, e.message);
-    if (isBlockedError(e)) await markBotStatus(chatId, true);
-    return false;
+    if (isBlockedError(e)) {
+      await markBotStatus(chatId, true);
+      return false;
+    }
+    // Частая причина непредвиденного падения — спецсимволы в подставленных именах
+    // (например, имя контакта из CRM со скобками/подчёркиваниями) ломают Markdown-разметку
+    // всего сообщения целиком. Пробуем доставить хотя бы голый текст, а не молчать весь день.
+    console.error(`Send error (markdown) ${chatId}:`, e.message);
+    try {
+      const plainText = text.replace(/\*/g, '').replace(/_/g, '');
+      await bot.sendMessage(chatId, plainText, {
+        reply_markup: { inline_keyboard: [[{ text: btnText, url: btnUrl }]] }
+      });
+      await new Promise(r => setTimeout(r, 150));
+      return true;
+    } catch(e2) {
+      console.error(`Send error (plain fallback) ${chatId}:`, e2.message);
+      if (isBlockedError(e2)) await markBotStatus(chatId, true);
+      return false;
+    }
   }
 }
 
@@ -681,10 +735,14 @@ cron.schedule('0 5 * * 0,1,2,4,5,6', async () => {
   for (const u of users) {
     const name   = u.name.split(' ')[0];
     const streak = u.streak > 1 ? `\n🔥 Серия: *${u.streak} дней* — держи ритм!\n` : '';
+    const dueNames = await getCrmDueToday(u.uid);
+    const crmLine = dueNames.length
+      ? `\n📇 *Сегодня по плану связаться:* ${dueNames.slice(0,5).join(', ')}${dueNames.length>5?` и ещё ${dueNames.length-5}`:''}\n`
+      : '';
     const text =
       `☀️ *Доброе утро, ${name}!*\n\n` +
       `💡 *Мысль дня:*\n_${THOUGHTS[idx]}_\n\n` +
-      `❓ *Вопрос на сегодня:*\n${QUESTIONS[idx % QUESTIONS.length]}${streak}`;
+      `❓ *Вопрос на сегодня:*\n${QUESTIONS[idx % QUESTIONS.length]}${streak}${crmLine}`;
     if (await sendMsg(u.chatId, text)) sent++;
   }
   console.log(`[CRON] Morning: ${sent}/${users.length}`);
