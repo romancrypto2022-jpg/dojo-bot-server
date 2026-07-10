@@ -11,11 +11,27 @@ const TelegramBot = require('node-telegram-bot-api');
 const cron        = require('node-cron');
 const express     = require('express');
 const crypto      = require('crypto');
+const admin       = require('firebase-admin');
 
 const BOT_TOKEN        = process.env.BOT_TOKEN;
 const NOTIFY_SECRET    = process.env.NOTIFY_SECRET;
 const FIREBASE_PROJECT = 'dojo-leadership';
 const DOJO_URL         = 'https://romansmolkov.com/dojo/app';
+
+// ── FIREBASE ADMIN SDK ───────────────────────────
+// Доверенный серверный доступ — в отличие от обычных REST-запросов ниже (которые пока
+// работают только благодаря открытым правилам Firestore), этот способ не ограничивается
+// правилами безопасности вообще. Нужен, чтобы бот мог выпускать настоящие Firebase-токены
+// авторизации для входа — первый шаг к переходу с открытой базы на защищённую.
+let firebaseAdminReady = false;
+try {
+  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+  admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+  firebaseAdminReady = true;
+  console.log('[Firebase Admin] Инициализирован успешно');
+} catch(e) {
+  console.error('[Firebase Admin] Ошибка инициализации — проверь переменную FIREBASE_SERVICE_ACCOUNT_JSON в Railway:', e.message);
+}
 
 // ── FIREBASE REST ────────────────────────────────
 async function fsGet(path) {
@@ -348,12 +364,25 @@ bot.onText(/\/start(.*)/, async (msg, match) => {
   const token   = crypto.randomBytes(20).toString('hex');
   const expires = Date.now() + 10 * 60 * 1000;
 
+  // Настоящий Firebase-токен авторизации — пока просто кладём его рядом со старым токеном,
+  // фронтенд его ещё не читает и не использует. Это шаг 1: убедиться, что Admin SDK и
+  // выпуск токена работают, прежде чем менять сам вход и правила базы.
+  let authToken = '';
+  if (firebaseAdminReady) {
+    try {
+      authToken = await admin.auth().createCustomToken(uid);
+    } catch(e) {
+      console.error('[Firebase Admin] Не удалось создать custom token для', uid, ':', e.message);
+    }
+  }
+
   await fsSet(`loginTokens/${token}`, {
     uid, chatId,
     name: (firstName + (lastName ? ' ' + lastName : '')).trim(),
     username,
     refCode,
-    expires: String(expires)
+    expires: String(expires),
+    authToken
   });
 
   const loginUrl = `${DOJO_URL}?token=${token}${refCode ? '&ref=' + refCode : ''}`;
@@ -408,7 +437,7 @@ bot.onText(/^\/whoami/i, async (msg) => {
   const chatId = String(msg.chat.id);
   const check = await checkAdmin(uid);
   await bot.sendMessage(chatId,
-    `🔍 *Диагностика*\n\nTelegram ID: \`${uid}\`\nАдмин: ${check.ok ? '✅ да' : '❌ нет'}\n${check.reason ? check.reason : ''}`,
+    `🔍 *Диагностика*\n\nTelegram ID: \`${uid}\`\nАдмин: ${check.ok ? '✅ да' : '❌ нет'}\n${check.reason ? check.reason : ''}\n\nFirebase Admin SDK: ${firebaseAdminReady ? '✅ подключен' : '❌ не подключен — проверь FIREBASE_SERVICE_ACCOUNT_JSON в Railway'}`,
     { parse_mode: 'Markdown' }
   );
 });
