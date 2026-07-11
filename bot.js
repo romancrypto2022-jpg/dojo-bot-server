@@ -383,7 +383,8 @@ bot.onText(/\/start(.*)/, async (msg, match) => {
     username,
     refCode,
     expires: String(expires),
-    authToken
+    authToken,
+    source: 'main'
   });
 
   const loginUrl = `${DOJO_URL}?token=${token}${refCode ? '&ref=' + refCode : ''}`;
