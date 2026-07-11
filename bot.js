@@ -369,6 +369,7 @@ bot.onText(/\/start(.*)/, async (msg, match) => {
   // сначала пусть возьмёт ссылку у наставника, либо явную ссылку "создать свою команду".
   const existingUser = await fsGet(`users/${uid}`);
   const isNewUser = !existingUser?.fields;
+  console.log(`[/start gate] uid=${uid} refCode="${refCode}" isNewUser=${isNewUser} existingUserRaw=${JSON.stringify(existingUser)}`);
 
   if (isNewUser && !refCode) {
     await bot.sendMessage(chatId,
