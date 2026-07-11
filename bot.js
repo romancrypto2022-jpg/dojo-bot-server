@@ -82,6 +82,7 @@ async function getAllUsers() {
       streak:    parseInt(f.currentStreak?.integerValue || 0),
       lastDate:  f.lastActiveDate?.stringValue || '',
       invitedBy: f.invitedBy?.stringValue || null,
+      teamId:    f.teamId?.stringValue || null,
       botBlocked:   f.botBlocked?.booleanValue || false,
       botBlockedAt: f.botBlockedAt?.stringValue || null,
       goal: {
@@ -492,6 +493,40 @@ bot.onText(/^\/migrate_audits/i, async (msg) => {
 
   await bot.sendMessage(chatId,
     `✅ *Готово.*\n\nПеренесено: *${migrated}*\nНечего было переносить: *${skipped}*\nОшибок: *${errors}*\n\nЭту команду больше не нужно вызывать снова — она разовая.`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// ── ОДНОРАЗОВАЯ МИГРАЦИЯ: teamId для всей текущей команды ──
+// Сейчас в базе одна-единственная команда — твоя. Проставляем всем текущим партнёрам
+// teamId = твой Telegram ID, чтобы дальше можно было фильтровать рейтинг/структуру/аудиты
+// команды по teamId, а не показывать вообще всех подряд. Идемпотентно — повторный запуск
+// не перезапишет тех, у кого teamId уже стоит (например, если кто-то уже успел зарегистрироваться
+// после того как появится логика "второй двери" для новых команд).
+bot.onText(/^\/migrate_teamid/i, async (msg) => {
+  const uid = String(msg.from.id);
+  const chatId = String(msg.chat.id);
+  const check = await checkAdmin(uid);
+  if (!check.ok) { await bot.sendMessage(chatId, `⛔ ${check.reason}`); return; }
+
+  await bot.sendMessage(chatId, `🔧 Проставляю teamId = \`${uid}\` (твой ID) всем текущим партнёрам без teamId...`, { parse_mode: 'Markdown' });
+
+  const users = await getAllUsers();
+  let migrated = 0, skipped = 0, errors = 0;
+  for (const u of users) {
+    try {
+      const doc = await fsGet(`users/${u.uid}`);
+      if (doc?.fields?.teamId?.stringValue) { skipped++; continue; }
+      await fsSet(`users/${u.uid}`, { teamId: uid });
+      migrated++;
+    } catch(e) {
+      console.error('migrate_teamid error for', u.uid, e.message);
+      errors++;
+    }
+  }
+
+  await bot.sendMessage(chatId,
+    `✅ *Готово.*\n\nПроставлено: *${migrated}*\nУже было: *${skipped}*\nОшибок: *${errors}*\n\nЭту команду можно безопасно вызывать повторно — она не трогает тех, у кого teamId уже есть.`,
     { parse_mode: 'Markdown' }
   );
 });
