@@ -352,6 +352,29 @@ bot.on('polling_error', (err) => {
   console.error('Polling error:', err.message);
 });
 
+// Твой собственный Telegram ID — "родная" команда, для которой уместна ссылка на
+// личное сообщество (Клан Самурай). Для параллельных команд эта ссылка не показывается.
+const ROMAN_UID = '345888574';
+
+// Определяет итоговый teamId для решения "показывать ли ссылку на Клан Самурай" —
+// у уже существующих смотрим их сохранённый teamId, у новых — либо они сами себе команда
+// (NEWTEAM/без кода), либо наследуют teamId того, кто их пригласил по реферальному коду.
+async function resolveTeamIdForStart(uid, existingUser, isNewUser, refCode) {
+  if (!isNewUser) {
+    return existingUser.fields?.teamId?.stringValue || null;
+  }
+  if (!refCode || refCode === 'NEWTEAM') return uid;
+  try {
+    const refDoc = await fsGet(`referrals/${refCode}`);
+    const inviterUid = refDoc?.fields?.uid?.stringValue;
+    if (!inviterUid) return null;
+    const inviterDoc = await fsGet(`users/${inviterUid}`);
+    return inviterDoc?.fields?.teamId?.stringValue || inviterUid;
+  } catch(e) {
+    return null;
+  }
+}
+
 bot.onText(/\/start(.*)/, async (msg, match) => {
   const chatId    = String(msg.chat.id);
   const uid       = String(msg.from.id);
@@ -380,6 +403,9 @@ bot.onText(/\/start(.*)/, async (msg, match) => {
     return;
   }
 
+  const resolvedTeamId = await resolveTeamIdForStart(uid, existingUser, isNewUser, refCode);
+  const showSamuraiChat = !resolvedTeamId || resolvedTeamId === ROMAN_UID;
+
   const token   = crypto.randomBytes(20).toString('hex');
   const expires = Date.now() + 10 * 60 * 1000;
 
@@ -407,18 +433,17 @@ bot.onText(/\/start(.*)/, async (msg, match) => {
   const loginUrl = `${DOJO_URL}?token=${token}${refCode ? '&ref=' + refCode : ''}`;
 
   try {
+    const keyboard = [[{ text: '🚀 Войти в DOJO', url: loginUrl }]];
+    if (showSamuraiChat) {
+      keyboard.push([{ text: '💬 Чат клана Самурай', url: 'https://t.me/+SlFxmMLiASI5NmMy' }]);
+    }
     await bot.sendMessage(chatId,
       `👋 *Привет, ${firstName}!*\n\n` +
       `Нажми кнопку ниже чтобы войти в DOJO.\n` +
       `Это займёт 3 минуты — и система начнёт работать на тебя.`,
       {
         parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🚀 Войти в DOJO', url: loginUrl }],
-            [{ text: '💬 Чат клана Самурай', url: 'https://t.me/+SlFxmMLiASI5NmMy' }]
-          ]
-        }
+        reply_markup: { inline_keyboard: keyboard }
       }
     );
   } catch(e) { console.error('Start error:', e.message); }
