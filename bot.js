@@ -16,6 +16,7 @@ const admin       = require('firebase-admin');
 const BOT_TOKEN        = process.env.BOT_TOKEN;
 const NOTIFY_SECRET    = process.env.NOTIFY_SECRET;
 const FIREBASE_PROJECT = 'dojo-leadership';
+const HOME_TEAM_ID = '345888574'; // твой собственный Telegram ID — команда по умолчанию
 const DOJO_URL         = 'https://romansmolkov.com/dojo/app';
 
 // ── FIREBASE ADMIN SDK ───────────────────────────
@@ -980,6 +981,96 @@ cron.schedule('0 15 * * 0', async () => {
     }
   }
   console.log(`[CRON] 7-touches check: ${sent} notifications sent`);
+}, { timezone: 'UTC' });
+
+// ── CRON: 8:30 МСК понедельник — топ-3 прошлой недели (личные поздравления) ──
+// Тот же самый "Спринт"-индекс активности, что и на сайте в рейтинге: не абсолютные баллы,
+// а честный % от того, что реально было доступно каждому конкретному человеку на прошлой
+// неделе (с поправкой на то, прошёл ли он Спринт 1 и есть ли у него партнёры). Личное
+// сообщение только тройке лучших — не общая рассылка всей команде.
+const LB_WEEKLY_TARGETS = { training:5, invites:5, meeting:3, content:3, present:3, launched:1, thresome:2, mentorSlots:3, eventSlots:2 };
+const SPRINT1_VIDEO_IDS = [1,2,3,4,5];
+
+function localDateStrServer(d){
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,'0');
+  const day = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
+function getMondayOfLastWeek(){
+  // Крон стоит на понедельник — "прошлая неделя" это ровно 7 дней назад от сегодняшнего
+  // понедельника (Mon-Sun), той же логикой, что используется в остальном приложении.
+  const now = new Date();
+  const day = now.getDay();
+  const diff = now.getDate() - day + (day===0?-6:1);
+  const thisMonday = new Date(now.getFullYear(), now.getMonth(), diff);
+  const lastMonday = new Date(thisMonday); lastMonday.setDate(thisMonday.getDate()-7);
+  return lastMonday;
+}
+function daysOfWeekServer(monday){
+  const days=[];
+  for(let i=0;i<7;i++){ const d=new Date(monday); d.setDate(monday.getDate()+i); days.push(localDateStrServer(d)); }
+  return days;
+}
+function lbWeeklyMaxPoints(userFields){
+  const watched = userFields.watchedVideos?.mapValue?.fields || {};
+  const sprint1Done = SPRINT1_VIDEO_IDS.every(id => watched[String(id)]?.booleanValue);
+  const hasPartner = parseInt(userFields.directPartnersCount?.integerValue || 0) >= 1;
+  let max = 15*LB_WEEKLY_TARGETS.training + 20*LB_WEEKLY_TARGETS.invites + 25*LB_WEEKLY_TARGETS.meeting + 15*LB_WEEKLY_TARGETS.content;
+  if(sprint1Done) max += 30*LB_WEEKLY_TARGETS.present + 50*LB_WEEKLY_TARGETS.launched;
+  if(hasPartner)  max += 35*LB_WEEKLY_TARGETS.thresome;
+  max += 20*LB_WEEKLY_TARGETS.mentorSlots + 30*LB_WEEKLY_TARGETS.eventSlots;
+  return max;
+}
+async function lbWeeklyEarnedPointsServer(uid, mondayDate){
+  const days = daysOfWeekServer(mondayDate);
+  let earned = 0;
+  for(const d of days){
+    const doc = await fsGet(`dailyLogs/${uid}_${d}`);
+    earned += parseInt(doc?.fields?.points?.integerValue || 0);
+  }
+  const weekKey = localDateStrServer(mondayDate);
+  const wdoc = await fsGet(`weeklyLogs/${uid}_${weekKey}`);
+  earned += parseInt(wdoc?.fields?.points?.integerValue || 0);
+  return earned;
+}
+
+cron.schedule('30 5 * * 1', async () => {
+  console.log('[CRON] Monday top-3...');
+  try{
+    const users = await getAllUsers();
+    const teamUsers = users.filter(u => (u.teamId || HOME_TEAM_ID) === HOME_TEAM_ID);
+    const lastMonday = getMondayOfLastWeek();
+
+    const scored = [];
+    for(const u of teamUsers){
+      const userDoc = await fsGet(`users/${u.uid}`);
+      if(!userDoc?.fields) continue;
+      const max = lbWeeklyMaxPoints(userDoc.fields);
+      if(max<=0) continue;
+      const earned = await lbWeeklyEarnedPointsServer(u.uid, lastMonday);
+      const pct = Math.min(100, Math.round(earned/max*100));
+      if(earned<=0) continue; // не поздравляем с 0% активности
+      scored.push({ uid:u.uid, chatId:u.chatId, name:(u.name||'Партнёр').split(' ')[0], pct });
+    }
+
+    scored.sort((a,b)=>b.pct-a.pct);
+    const top3 = scored.slice(0,3);
+    const medals = ['🥇','🥈','🥉'];
+
+    let sent = 0;
+    for(let i=0;i<top3.length;i++){
+      const t = top3[i];
+      const text =
+        `${medals[i]} *${t.name}, поздравляю!*\n\n` +
+        `По итогам прошлой недели ты вошёл в тройку лучших по индексу активности команды — *${t.pct}%*.\n\n` +
+        `Это значит, что из всего, что реально было доступно тебе на этой неделе, ты выложился сильнее почти всех. Так держать 👊`;
+      if(await sendMsg(t.chatId, text)) sent++;
+    }
+    console.log(`[CRON] Monday top-3: отправлено ${sent}/${top3.length}`);
+  }catch(e){
+    console.error('[CRON] Monday top-3 error:', e.message);
+  }
 }, { timezone: 'UTC' });
 
 // ── EXPRESS ──────────────────────────────────────
