@@ -17,6 +17,15 @@ const BOT_TOKEN        = process.env.BOT_TOKEN;
 const NOTIFY_SECRET    = process.env.NOTIFY_SECRET;
 const FIREBASE_PROJECT = 'dojo-leadership';
 const HOME_TEAM_ID = '345888574'; // твой собственный Telegram ID — команда по умолчанию
+
+// Летучка команды по понедельникам — сразу после сонастройки в чате Самураев (10:00 МСК, ~1 час).
+// ⚠️ Если ссылка/код когда-нибудь поменяются — поправь здесь, в одном месте.
+const MONDAY_ZOOM_TEXT =
+  `Сегодня в 10:00 МСК в чате Самураев — сонастройка (~1 час), сразу после неё, примерно в 11:00 — летучка нашей команды. Подключайтесь, поделимся итогами прошлой недели:\n\n` +
+  `*Присоединиться к конференции Zoom*\n` +
+  `https://us05web.zoom.us/j/88059038145?pwd=YgQBvUag9PirE9MrKsbbyg5oIcu8iQ.1\n\n` +
+  `Идентификатор конференции: 880 5903 8145\n` +
+  `Код доступа: 1`;
 const DOJO_URL         = 'https://romansmolkov.com/dojo/app';
 
 // ── FIREBASE ADMIN SDK ───────────────────────────
@@ -797,6 +806,7 @@ cron.schedule('0 5 * * 0,1,2,4,5,6', async () => {
   console.log('[CRON] Morning...');
   const users = await getAllUsers();
   const idx   = getDayIndex();
+  const isMonday = new Date().getUTCDay() === 1; // крон в UTC — 5:00 UTC понедельника = 8:00 МСК понедельника
   let sent = 0;
   for (const u of users) {
     const name   = u.name.split(' ')[0];
@@ -805,10 +815,11 @@ cron.schedule('0 5 * * 0,1,2,4,5,6', async () => {
     const crmLine = dueNames.length
       ? `\n📇 *Сегодня по плану связаться:* ${dueNames.slice(0,5).join(', ')}${dueNames.length>5?` и ещё ${dueNames.length-5}`:''}\n`
       : '';
+    const zoomLine = isMonday ? `\n🎥 ${MONDAY_ZOOM_TEXT}` : '';
     const text =
       `☀️ *Доброе утро, ${name}!*\n\n` +
       `💡 *Мысль дня:*\n_${THOUGHTS[idx]}_\n\n` +
-      `❓ *Вопрос на сегодня:*\n${QUESTIONS[idx % QUESTIONS.length]}${streak}${crmLine}`;
+      `❓ *Вопрос на сегодня:*\n${QUESTIONS[idx % QUESTIONS.length]}${streak}${crmLine}${zoomLine}`;
     if (await sendMsg(u.chatId, text)) sent++;
   }
   console.log(`[CRON] Morning: ${sent}/${users.length}`);
@@ -1064,7 +1075,8 @@ cron.schedule('30 5 * * 1', async () => {
       const text =
         `${medals[i]} *${t.name}, поздравляю!*\n\n` +
         `По итогам прошлой недели ты вошёл в тройку лучших по индексу активности команды — *${t.pct}%*.\n\n` +
-        `Это значит, что из всего, что реально было доступно тебе на этой неделе, ты выложился сильнее почти всех. Так держать 👊`;
+        `Это значит, что из всего, что реально было доступно тебе на этой неделе, ты выложился сильнее почти всех. Так держать 👊\n\n` +
+        `🎥 ${MONDAY_ZOOM_TEXT}`;
       if(await sendMsg(t.chatId, text)) sent++;
     }
     console.log(`[CRON] Monday top-3: отправлено ${sent}/${top3.length}`);
