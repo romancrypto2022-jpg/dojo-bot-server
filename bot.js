@@ -1046,26 +1046,32 @@ async function lbWeeklyEarnedPointsServer(uid, mondayDate){
   return earned;
 }
 
+// Считает "Спринт"-индекс за ПРОШЛУЮ неделю для всей команды и возвращает отсортированный
+// список (лучшие сверху) — используется и в понедельничном кроне, и в команде /top3.
+async function computeLastWeekScored(){
+  const users = await getAllUsers();
+  const teamUsers = users.filter(u => (u.teamId || HOME_TEAM_ID) === HOME_TEAM_ID);
+  const lastMonday = getMondayOfLastWeek();
+
+  const scored = [];
+  for(const u of teamUsers){
+    const userDoc = await fsGet(`users/${u.uid}`);
+    if(!userDoc?.fields) continue;
+    const max = lbWeeklyMaxPoints(userDoc.fields);
+    if(max<=0) continue;
+    const earned = await lbWeeklyEarnedPointsServer(u.uid, lastMonday);
+    const pct = Math.min(100, Math.round(earned/max*100));
+    if(earned<=0) continue; // не поздравляем/не показываем с 0% активности
+    scored.push({ uid:u.uid, chatId:u.chatId, name:(u.name||'Партнёр').split(' ')[0], username:u.username||'', pct });
+  }
+  scored.sort((a,b)=>b.pct-a.pct);
+  return scored;
+}
+
 cron.schedule('30 5 * * 1', async () => {
   console.log('[CRON] Monday top-3...');
   try{
-    const users = await getAllUsers();
-    const teamUsers = users.filter(u => (u.teamId || HOME_TEAM_ID) === HOME_TEAM_ID);
-    const lastMonday = getMondayOfLastWeek();
-
-    const scored = [];
-    for(const u of teamUsers){
-      const userDoc = await fsGet(`users/${u.uid}`);
-      if(!userDoc?.fields) continue;
-      const max = lbWeeklyMaxPoints(userDoc.fields);
-      if(max<=0) continue;
-      const earned = await lbWeeklyEarnedPointsServer(u.uid, lastMonday);
-      const pct = Math.min(100, Math.round(earned/max*100));
-      if(earned<=0) continue; // не поздравляем с 0% активности
-      scored.push({ uid:u.uid, chatId:u.chatId, name:(u.name||'Партнёр').split(' ')[0], pct });
-    }
-
-    scored.sort((a,b)=>b.pct-a.pct);
+    const scored = await computeLastWeekScored();
     const top3 = scored.slice(0,3);
     const medals = ['🥇','🥈','🥉'];
 
@@ -1084,6 +1090,35 @@ cron.schedule('30 5 * * 1', async () => {
     console.error('[CRON] Monday top-3 error:', e.message);
   }
 }, { timezone: 'UTC' });
+
+// ── /top3 — показать топ-3 прошлой недели по запросу, в любой момент (не только в понедельник) ──
+bot.onText(/^\/top3/i, async (msg) => {
+  const uid = String(msg.from.id);
+  const chatId = String(msg.chat.id);
+  const check = await checkAdmin(uid);
+  if (!check.ok) { await bot.sendMessage(chatId, `⛔ ${check.reason}`); return; }
+
+  await bot.sendMessage(chatId, '🔧 Считаю топ-3 за прошлую неделю...');
+  try{
+    const scored = await computeLastWeekScored();
+    const top3 = scored.slice(0,3);
+    if(top3.length===0){
+      await bot.sendMessage(chatId, '📊 За прошлую неделю ни у кого нет активности выше 0%.');
+      return;
+    }
+    const medals = ['🥇','🥈','🥉'];
+    const lines = top3.map((t,i) => {
+      const safeName = escapeHtml(t.name);
+      const nameLink = `<a href="tg://user?id=${t.chatId}">${safeName}</a>`;
+      const handle = t.username ? ` (@${escapeHtml(t.username)})` : '';
+      return `${medals[i]} ${nameLink}${handle} — ${t.pct}%`;
+    });
+    await bot.sendMessage(chatId, `📊 <b>Топ-3 за прошлую неделю:</b>\n\n${lines.join('\n')}`, { parse_mode: 'HTML' });
+  }catch(e){
+    console.error('/top3 error:', e.message);
+    await bot.sendMessage(chatId, '⚠ Не удалось посчитать — попробуй ещё раз.');
+  }
+});
 
 // ── EXPRESS ──────────────────────────────────────
 const app = express();
