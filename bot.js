@@ -1077,11 +1077,14 @@ async function computeLastWeekScored(){
     const max = lbWeeklyMaxPoints(userDoc.fields);
     if(max<=0) continue;
     const earned = await lbWeeklyEarnedPointsServer(u.uid, lastMonday);
-    const pct = Math.min(100, Math.round(earned/max*100));
+    const raw = earned/max*100; // без ограничения 100 — тот же принцип, что и на сайте, для честного tie-break
+    const pct = Math.min(100, Math.round(raw));
     if(earned<=0) continue; // не поздравляем/не показываем с 0% активности
-    scored.push({ uid:u.uid, chatId:u.chatId, name:(u.name||'Партнёр').split(' ')[0], username:u.username||'', pct });
+    scored.push({ uid:u.uid, chatId:u.chatId, name:(u.name||'Партнёр').split(' ')[0], username:u.username||'', pct, raw:Math.round(raw) });
   }
-  scored.sort((a,b)=>b.pct-a.pct);
+  // Сортировка идентична сайту: сначала по видимому %, при равенстве — по "сырому" баллу без
+  // ограничения 100 (кто реально сделал больше, а не просто дотянулся до потолка недели).
+  scored.sort((a,b)=> (b.pct-a.pct) || (b.raw-a.raw));
   return scored;
 }
 
@@ -1129,7 +1132,8 @@ bot.onText(/^\/top3/i, async (msg) => {
       const safeName = escapeHtml(t.name);
       const nameLink = `<a href="tg://user?id=${t.chatId}">${safeName}</a>`;
       const handle = t.username ? ` (@${escapeHtml(t.username)})` : '';
-      return `${medals[i]} ${nameLink}${handle} — ${t.pct}%`;
+      const rawNote = t.raw > t.pct ? ` <i>(факт ${t.raw}%)</i>` : '';
+      return `${medals[i]} ${nameLink}${handle} — ${t.pct}%${rawNote}`;
     });
     await bot.sendMessage(chatId, `📊 <b>Топ-3 за прошлую неделю:</b>\n\n${lines.join('\n')}`, { parse_mode: 'HTML' });
   }catch(e){
