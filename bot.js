@@ -522,6 +522,24 @@ bot.onText(/^\/max_setup_webhook/i, async (msg) => {
   }
 });
 
+// ── ТЕСТ: отправить себе сообщение через sendToUser (проверить дублирование в MAX) ──
+bot.onText(/^\/max_test/i, async (msg) => {
+  const uid = String(msg.from.id);
+  const chatId = String(msg.chat.id);
+  const check = await checkAdmin(uid);
+  if (!check.ok) { await bot.sendMessage(chatId, `⛔ ${check.reason}`); return; }
+
+  const users = await getAllUsers();
+  const me = users.find(u => u.uid === uid);
+  if (!me) { await bot.sendMessage(chatId, '❌ Не нашёл тебя в базе.'); return; }
+
+  const ok = await sendToUser(me, '🧪 Тестовое сообщение — если видишь это и в Telegram, и в MAX, дублирование работает.');
+  await bot.sendMessage(chatId, ok
+    ? `✅ Отправлено. maxChatId: ${me.maxChatId || '(не привязан)'}`
+    : '❌ Не удалось отправить в Telegram.'
+  );
+});
+
 // ── ДИАГНОСТИКА: проверить что бот жив на новом коде и видит твою роль ──
 bot.onText(/^\/whoami/i, async (msg) => {
   const uid = String(msg.from.id);
