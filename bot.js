@@ -499,7 +499,7 @@ bot.onText(/^\/max_setup_webhook/i, async (msg) => {
 
   // ⚠️ Впиши сюда публичный домен ИМЕННО ЭТОГО бота на Railway (Settings → Networking →
   // Generate Domain, если ещё не сгенерирован) — не домен параллельного бота.
-  const MAIN_BOT_PUBLIC_URL = 'https://ВПИШИ-СЮДА.up.railway.app';
+  const MAIN_BOT_PUBLIC_URL = 'https://dojo-bot-server-production.up.railway.app';
   const webhookUrl = `${MAIN_BOT_PUBLIC_URL}/max-webhook`;
   await bot.sendMessage(chatId, '🔧 Регистрирую вебхук в MAX...');
   try{
