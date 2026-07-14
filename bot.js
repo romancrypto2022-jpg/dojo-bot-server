@@ -18,6 +18,38 @@ const NOTIFY_SECRET    = process.env.NOTIFY_SECRET;
 const FIREBASE_PROJECT = 'dojo-leadership';
 const HOME_TEAM_ID = '345888574'; // твой собственный Telegram ID — команда по умолчанию
 
+// ── MAX (@550300750828_bot) — резервный канал уведомлений, на случай недоступности Telegram ──
+// ⚠️ Домен platform-api2.max.ru — новый, миграция с platform-api.max.ru обязательна до 19.07.2026.
+const MAX_BOT_TOKEN = process.env.MAX_BOT_TOKEN;
+const MAX_API = 'https://platform-api2.max.ru';
+
+async function sendMaxMessage(maxChatId, text){
+  if(!maxChatId || !MAX_BOT_TOKEN) return false;
+  // MAX поддерживает форматирование, но синтаксис отличается от Telegram-Markdown —
+  // безопаснее снять *_ разметку, чем рисковать битым/нечитаемым текстом.
+  const plain = text.replace(/\*/g,'').replace(/_/g,'').slice(0,4000);
+  try{
+    const r = await fetch(`${MAX_API}/messages?chat_id=${maxChatId}`, {
+      method: 'POST',
+      headers: { 'Authorization': MAX_BOT_TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: plain })
+    });
+    return r.ok;
+  }catch(e){
+    console.error('sendMaxMessage error:', e.message);
+    return false;
+  }
+}
+
+// Единая точка отправки — шлёт в Telegram и, если у человека привязан MAX, дублирует туда же.
+// Используй это вместо голого sendMsg() во всех плановых уведомлениях (CRON), где под рукой
+// есть полный объект пользователя u (из getAllUsers()), а не только его Telegram chatId.
+async function sendToUser(u, text, btnText, btnUrl){
+  const tgOk = await sendMsg(u.chatId, text, btnText, btnUrl);
+  if(u.maxChatId) await sendMaxMessage(u.maxChatId, text);
+  return tgOk;
+}
+
 // Летучка команды по понедельникам — сразу после сонастройки в чате Самураев (10:00 МСК, ~1 час).
 // ⚠️ Если ссылка/код когда-нибудь поменяются — поправь здесь, в одном месте.
 // ── СОНАСТРОЙКИ КОМАНДЫ САМУРАЙ — ежедневные Zoom-встречи со своей темой (Пн-Сб).
@@ -106,6 +138,7 @@ async function getAllUsers() {
       lastDate:  f.lastActiveDate?.stringValue || '',
       invitedBy: f.invitedBy?.stringValue || null,
       teamId:    f.teamId?.stringValue || null,
+      maxChatId: f.maxChatId?.stringValue || null,
       botBlocked:   f.botBlocked?.booleanValue || false,
       botBlockedAt: f.botBlockedAt?.stringValue || null,
       goal: {
@@ -456,6 +489,39 @@ function entitiesToMarkdown(text, entities) {
   return result;
 }
 
+// ── ОДНОРАЗОВАЯ КОМАНДА: зарегистрировать вебхук MAX (после деплоя, один раз) ──
+bot.onText(/^\/max_setup_webhook/i, async (msg) => {
+  const uid = String(msg.from.id);
+  const chatId = String(msg.chat.id);
+  const check = await checkAdmin(uid);
+  if (!check.ok) { await bot.sendMessage(chatId, `⛔ ${check.reason}`); return; }
+  if (!MAX_BOT_TOKEN) { await bot.sendMessage(chatId, '❌ MAX_BOT_TOKEN не задан в Railway.'); return; }
+
+  // ⚠️ Впиши сюда публичный домен ИМЕННО ЭТОГО бота на Railway (Settings → Networking →
+  // Generate Domain, если ещё не сгенерирован) — не домен параллельного бота.
+  const MAIN_BOT_PUBLIC_URL = 'https://ВПИШИ-СЮДА.up.railway.app';
+  const webhookUrl = `${MAIN_BOT_PUBLIC_URL}/max-webhook`;
+  await bot.sendMessage(chatId, '🔧 Регистрирую вебхук в MAX...');
+  try{
+    const r = await fetch(`${MAX_API}/subscriptions`, {
+      method: 'POST',
+      headers: { 'Authorization': MAX_BOT_TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: webhookUrl,
+        update_types: ['message_created', 'bot_started']
+      })
+    });
+    const data = await r.json();
+    if(r.ok){
+      await bot.sendMessage(chatId, `✅ Вебхук зарегистрирован на:\n\`${webhookUrl}\``, { parse_mode:'Markdown' });
+    } else {
+      await bot.sendMessage(chatId, `❌ Ошибка: ${JSON.stringify(data)}`);
+    }
+  }catch(e){
+    await bot.sendMessage(chatId, `❌ Ошибка соединения: ${e.message}`);
+  }
+});
+
 // ── ДИАГНОСТИКА: проверить что бот жив на новом коде и видит твою роль ──
 bot.onText(/^\/whoami/i, async (msg) => {
   const uid = String(msg.from.id);
@@ -805,8 +871,8 @@ async function notifyLeader(users, absentUser, daysAbsent) {
   if (!absentUser.invitedBy) return;
   const leader = users.find(l => l.uid === absentUser.invitedBy);
   if (!leader?.chatId) return;
-  await sendMsg(
-    leader.chatId,
+  await sendToUser(
+    leader,
     `⚠️ *Партнёр пропал*\n\n` +
     `👤 *${absentUser.name}* не заходил в DOJO уже *${daysAbsent} дней*.\n\n` +
     `Возможно стоит написать лично.`,
@@ -835,7 +901,7 @@ cron.schedule('0 5 * * 0,1,2,4,5,6', async () => {
       `☀️ *Доброе утро, ${name}!*\n\n` +
       `💡 *Мысль дня:*\n_${THOUGHTS[idx]}_\n\n` +
       `❓ *Вопрос на сегодня:*\n${QUESTIONS[idx % QUESTIONS.length]}${streak}${crmLine}${zoomLine}`;
-    if (await sendMsg(u.chatId, text)) sent++;
+    if (await sendToUser(u, text)) sent++;
   }
   console.log(`[CRON] Morning: ${sent}/${users.length}`);
 }, { timezone: 'UTC' });
@@ -853,8 +919,8 @@ cron.schedule('0 5 * * 3', async () => {
 
     // Цели не заполнены — напоминаем заполнить
     if (!g.maingoal && !g.dream) {
-      await sendMsg(
-        u.chatId,
+      await sendToUser(
+        u,
         `📝 *${name}, ты ещё не записал свои цели*\n\n` +
         `Каждую среду партнёры получают напоминание о своих целях и мечтах.\n\n` +
         `Ты пропускаешь это — потому что цели ещё не заполнены.\n\n` +
@@ -877,7 +943,7 @@ cron.schedule('0 5 * * 3', async () => {
       `Ты написал это сам — в первый день:\n\n` +
       goalLines +
       `\nКаждое действие сегодня приближает тебя к этому 👇${zoomBlock}`;
-    if (await sendMsg(u.chatId, text)) sent++;
+    if (await sendToUser(u, text)) sent++;
   }
   console.log(`[CRON] Goals: ${sent}/${users.length}`);
 }, { timezone: 'UTC' });
@@ -895,7 +961,7 @@ cron.schedule('0 16 * * *', async () => {
 
     // Milestone уведомления серии
     if (u.streak === 7) {
-      await sendMsg(u.chatId,
+      await sendToUser(u,
         `🔥 *${name}, 7 дней подряд!*\n\n` +
         `Ты прошёл первый барьер.\n` +
         `Большинство людей не доходят даже до этого момента.\n\n` +
@@ -904,7 +970,7 @@ cron.schedule('0 16 * * *', async () => {
       sent++; continue;
     }
     if (u.streak === 14) {
-      await sendMsg(u.chatId,
+      await sendToUser(u,
         `⚡ *${name}, 14 дней без пропусков!*\n\n` +
         `Две недели последовательных действий.\n` +
         `Половина пути к настоящей привычке пройдена.`
@@ -912,7 +978,7 @@ cron.schedule('0 16 * * *', async () => {
       sent++; continue;
     }
     if (u.streak === 21) {
-      await sendMsg(u.chatId,
+      await sendToUser(u,
         `🏆 *${name}, 21 день — точка невозврата!*\n\n` +
         `Ты прошёл минимальный порог формирования привычки.\n` +
         `Теперь это часть тебя. Продолжай.`
@@ -920,7 +986,7 @@ cron.schedule('0 16 * * *', async () => {
       sent++; continue;
     }
     if (u.streak === 30) {
-      await sendMsg(u.chatId,
+      await sendToUser(u,
         `🥋 *${name}, 30 дней. Это уже образ жизни.*\n\n` +
         `Месяц ежедневной работы над собой.\n` +
         `Ты входишь в 1% людей которые следуют системе каждый день.\n\n` +
@@ -930,7 +996,7 @@ cron.schedule('0 16 * * *', async () => {
       if (u.invitedBy) {
         const leader = users.find(l => l.uid === u.invitedBy);
         if (leader?.chatId) {
-          await sendMsg(leader.chatId,
+          await sendToUser(leader,
             `🏆 *Твой партнёр достиг 30 дней!*\n\n` +
             `👤 *${u.name}* закрыл серию в 30 дней в DOJO.\n` +
             `Напиши ему — такие моменты важно отмечать лично.`,
@@ -964,7 +1030,7 @@ cron.schedule('0 16 * * *', async () => {
       text = `👋 *${name}*\n\nDOJO всё ещё здесь. Возвращайся 👇`;
     }
 
-    if (text && await sendMsg(u.chatId, text, '✓ Заполнить чеклист')) sent++;
+    if (text && await sendToUser(u, text, '✓ Заполнить чеклист')) sent++;
   }
   console.log(`[CRON] Evening: ${sent}/${users.length}`);
 }, { timezone: 'UTC' });
@@ -980,7 +1046,7 @@ cron.schedule('0 14 * * 0', async () => {
       `📋 *${name}, время подвести итоги недели!*\n\n` +
       `6 вопросов · 3 минуты · раз в неделю.\n\n` +
       `Аудит помогает видеть рост и не повторять ошибки 👇`;
-    if (await sendMsg(u.chatId, text, '📋 Пройти аудит')) sent++;
+    if (await sendToUser(u, text, '📋 Пройти аудит')) sent++;
   }
   console.log(`[CRON] Audit: ${sent}/${users.length}`);
 }, { timezone: 'UTC' });
@@ -1005,7 +1071,7 @@ cron.schedule('0 15 * * 0', async () => {
         `📊 *Ситуация по ${u.name}*\n\n` +
         `За эту неделю: *${totalPresent}* презентаций, *0* подключений.\n\n` +
         `Скорее всего, это нормально — по принципу «7 касаний» между презентацией и регистрацией обычно проходит несколько встреч. Но стоит свериться на консультации, чтобы синхронизироваться.`;
-      if (await sendMsg(mentor.chatId, text, '📊 Кабинет лидера')) sent++;
+      if (await sendToUser(mentor, text, '📊 Кабинет лидера')) sent++;
     }
   }
   console.log(`[CRON] 7-touches check: ${sent} notifications sent`);
@@ -1080,7 +1146,7 @@ async function computeLastWeekScored(){
     const raw = earned/max*100; // без ограничения 100 — тот же принцип, что и на сайте, для честного tie-break
     const pct = Math.min(100, Math.round(raw));
     if(earned<=0) continue; // не поздравляем/не показываем с 0% активности
-    scored.push({ uid:u.uid, chatId:u.chatId, name:(u.name||'Партнёр').split(' ')[0], username:u.username||'', pct, raw:Math.round(raw) });
+    scored.push({ uid:u.uid, chatId:u.chatId, maxChatId:u.maxChatId, name:(u.name||'Партнёр').split(' ')[0], username:u.username||'', pct, raw:Math.round(raw) });
   }
   // Сортировка идентична сайту: сначала по видимому %, при равенстве — по "сырому" баллу без
   // ограничения 100 (кто реально сделал больше, а не просто дотянулся до потолка недели).
@@ -1104,7 +1170,7 @@ cron.schedule('30 5 * * 1', async () => {
         `По итогам прошлой недели ты вошёл в тройку лучших по индексу активности команды — *${t.pct}%*.\n\n` +
         `Это значит, что из всего, что реально было доступно тебе на этой неделе, ты выложился сильнее почти всех. Так держать 👊\n\n` +
         `${mondaySLine}\n\n${MONDAY_TEAM_MEETING_TEXT}`;
-      if(await sendMsg(t.chatId, text)) sent++;
+      if(await sendToUser(t, text)) sent++;
     }
     console.log(`[CRON] Monday top-3: отправлено ${sent}/${top3.length}`);
   }catch(e){
@@ -1188,6 +1254,40 @@ app.post('/notify', async (req, res) => {
       }
     }, 3000);
     res.json({ ok: false, error: e.message });
+  }
+});
+
+// ── MAX webhook — приём кода привязки от пользователя ──
+// ⚠️ Точная форма Update от MAX подтверждена по документации частично — если после первого
+// реального теста поля не совпадут, лог ниже покажет настоящую структуру для быстрой правки.
+app.post('/max-webhook', async (req, res) => {
+  res.sendStatus(200); // MAX требует ответ в течение 30 секунд — подтверждаем сразу, обрабатываем после
+  try{
+    const update = req.body;
+    console.log('[MAX webhook]', JSON.stringify(update));
+    if(update.update_type !== 'message_created') return;
+
+    const text = (update.message?.body?.text || '').trim().toUpperCase();
+    const maxChatId = update.message?.recipient?.chat_id || update.chat_id;
+    if(!text || !maxChatId) return;
+
+    const codeDoc = await fsGet(`maxLinkCodes/${text}`);
+    if(!codeDoc?.fields){
+      await sendMaxMessage(maxChatId, 'Код не найден или уже использован. Сгенерируй новый на сайте DOJO (кнопка «Привязать MAX» на главной).');
+      return;
+    }
+    const uid = codeDoc.fields.uid?.stringValue;
+    const expires = parseInt(codeDoc.fields.expires?.stringValue || '0');
+    if(!uid || Date.now() > expires){
+      await sendMaxMessage(maxChatId, 'Код устарел. Сгенерируй новый на сайте DOJO.');
+      await fsDelete(`maxLinkCodes/${text}`);
+      return;
+    }
+    await fsSet(`users/${uid}`, { maxChatId: String(maxChatId) });
+    await fsDelete(`maxLinkCodes/${text}`);
+    await sendMaxMessage(maxChatId, '✅ Готово! MAX подключен как резервный канал уведомлений DOJO.');
+  }catch(e){
+    console.error('/max-webhook error:', e.message);
   }
 });
 
