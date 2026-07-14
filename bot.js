@@ -26,13 +26,27 @@ const MAX_API = 'https://platform-api2.max.ru';
 async function sendMaxMessage(maxChatId, text){
   if(!maxChatId || !MAX_BOT_TOKEN) return false;
   // MAX поддерживает форматирование, но синтаксис отличается от Telegram-Markdown —
-  // безопаснее снять *_ разметку, чем рисковать битым/нечитаемым текстом.
-  const plain = text.replace(/\*/g,'').replace(/_/g,'').slice(0,4000);
+  // безопаснее снять *_ разметку, чем рисковать битым/нечитаемым текстом. А вот ссылки вида
+  // [текст](url) переносим в настоящие кликабельные кнопки MAX (inline_keyboard) — так они
+  // остаются рабочими, а не превращаются в голые скобки посреди текста.
+  const buttons = [];
+  const plain = text
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (match, linkText, url) => {
+      buttons.push([{ type: 'link', text: linkText.trim(), url }]);
+      return linkText.trim();
+    })
+    .replace(/\*/g,'').replace(/_/g,'').slice(0,4000);
+
+  const body = { text: plain };
+  if(buttons.length>0){
+    body.attachments = [{ type: 'inline_keyboard', payload: { buttons } }];
+  }
+
   try{
     const r = await fetch(`${MAX_API}/messages?chat_id=${maxChatId}`, {
       method: 'POST',
       headers: { 'Authorization': MAX_BOT_TOKEN, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: plain })
+      body: JSON.stringify(body)
     });
     return r.ok;
   }catch(e){
@@ -499,7 +513,7 @@ bot.onText(/^\/max_setup_webhook/i, async (msg) => {
 
   // ⚠️ Впиши сюда публичный домен ИМЕННО ЭТОГО бота на Railway (Settings → Networking →
   // Generate Domain, если ещё не сгенерирован) — не домен параллельного бота.
-  const MAIN_BOT_PUBLIC_URL = 'https://dojo-bot-server-production.up.railway.app';
+  const MAIN_BOT_PUBLIC_URL = 'https://ВПИШИ-СЮДА.up.railway.app';
   const webhookUrl = `${MAIN_BOT_PUBLIC_URL}/max-webhook`;
   await bot.sendMessage(chatId, '🔧 Регистрирую вебхук в MAX...');
   try{
