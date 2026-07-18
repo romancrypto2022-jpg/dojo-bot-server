@@ -153,6 +153,7 @@ async function getAllUsers() {
       invitedBy: f.invitedBy?.stringValue || null,
       teamId:    f.teamId?.stringValue || null,
       maxChatId: f.maxChatId?.stringValue || null,
+      track:     f.track?.stringValue || 'partner',
       botBlocked:   f.botBlocked?.booleanValue || false,
       botBlockedAt: f.botBlockedAt?.stringValue || null,
       goal: {
@@ -915,7 +916,7 @@ async function notifyLeader(users, absentUser, daysAbsent) {
 // ── CRON: 8:00 МСК — утро (кроме среды) ─────────
 cron.schedule('0 5 * * 0,1,2,4,5,6', async () => {
   console.log('[CRON] Morning...');
-  const users = await getAllUsers();
+  const users = (await getAllUsers()).filter(u => u.track!=='client');
   const idx   = getDayIndex();
   const dayOfWeek = new Date().getUTCDay(); // крон в UTC — 5:00 UTC = 8:00 МСК того же дня
   const sLine = sonastroykaLine(dayOfWeek);
@@ -941,7 +942,7 @@ cron.schedule('0 5 * * 0,1,2,4,5,6', async () => {
 // ── CRON: 8:00 МСК среда — цели ─────────────────
 cron.schedule('0 5 * * 3', async () => {
   console.log('[CRON] Wednesday goals...');
-  const users = await getAllUsers();
+  const users = (await getAllUsers()).filter(u => u.track!=='client');
   const sLine = sonastroykaLine(3);
   const zoomBlock = sLine ? `\n\n${sLine}` : '';
   let sent = 0;
@@ -983,7 +984,7 @@ cron.schedule('0 5 * * 3', async () => {
 // ── CRON: 19:00 МСК — умные вечерние уведомления ─
 cron.schedule('0 16 * * *', async () => {
   console.log('[CRON] Evening...');
-  const users = await getAllUsers();
+  const users = (await getAllUsers()).filter(u => u.track!=='client');
   let sent = 0;
 
   for (const u of users) {
@@ -1070,7 +1071,7 @@ cron.schedule('0 16 * * *', async () => {
 // ── CRON: 17:00 МСК воскресенье — аудит ─────────
 cron.schedule('0 14 * * 0', async () => {
   console.log('[CRON] Sunday audit...');
-  const users = await getAllUsers();
+  const users = (await getAllUsers()).filter(u => u.track!=='client');
   let sent = 0;
   for (const u of users) {
     const name = u.name.split(' ')[0];
@@ -1090,7 +1091,7 @@ cron.schedule('0 14 * * 0', async () => {
 const PRESENTATION_GAP_THRESHOLD = 10;
 cron.schedule('0 15 * * 0', async () => {
   console.log('[CRON] Weekly 7-touches check...');
-  const users = await getAllUsers();
+  const users = (await getAllUsers()).filter(u => u.track!=='client');
   let sent = 0;
   for (const u of users) {
     if (!u.invitedBy) continue;
@@ -1107,6 +1108,25 @@ cron.schedule('0 15 * * 0', async () => {
     }
   }
   console.log(`[CRON] 7-touches check: ${sent} notifications sent`);
+}, { timezone: 'UTC' });
+
+// ── CRON: 8:00 МСК понедельник и вторник — клиентский трек ──
+// Максимум 2 уведомления в неделю, как договаривались: только сонастройка/летучка,
+// без чек-листа, мысли дня, целей и остального партнёрского контента.
+cron.schedule('0 5 * * 1,2', async () => {
+  console.log('[CRON] Client track...');
+  const clients = (await getAllUsers()).filter(u => u.track==='client');
+  const dayOfWeek = new Date().getUTCDay();
+  const sLine = sonastroykaLine(dayOfWeek);
+  if(!sLine){ console.log('[CRON] Client track: нет темы на сегодня'); return; }
+  const meetingLine = (dayOfWeek===1) ? `\n\n${MONDAY_TEAM_MEETING_TEXT}` : '';
+  let sent = 0;
+  for(const u of clients){
+    const name = (u.name||'Друг').split(' ')[0];
+    const text = `👋 *${name}, привет!*\n\n${sLine}${meetingLine}`;
+    if(await sendToUser(u, text)) sent++;
+  }
+  console.log(`[CRON] Client track: ${sent}/${clients.length}`);
 }, { timezone: 'UTC' });
 
 // ── CRON: 8:30 МСК понедельник — топ-3 прошлой недели (личные поздравления) ──
@@ -1165,7 +1185,7 @@ async function lbWeeklyEarnedPointsServer(uid, mondayDate){
 // список (лучшие сверху) — используется и в понедельничном кроне, и в команде /top3.
 async function computeLastWeekScored(){
   const users = await getAllUsers();
-  const teamUsers = users.filter(u => (u.teamId || HOME_TEAM_ID) === HOME_TEAM_ID);
+  const teamUsers = users.filter(u => (u.teamId || HOME_TEAM_ID) === HOME_TEAM_ID && u.track!=='client');
   const lastMonday = getMondayOfLastWeek();
 
   const scored = [];
