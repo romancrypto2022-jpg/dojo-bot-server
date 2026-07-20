@@ -1230,6 +1230,54 @@ cron.schedule('30 5 * * 1', async () => {
   }
 }, { timezone: 'UTC' });
 
+// ── CRON: 9:00 МСК — продление членства (за 3 дня и в сам день) ──────────
+// Дату вводит сам партнёр на дашборде DOJO (поле users/{uid}.membershipRenewalDate,
+// 'YYYY-MM-DD'). Как только дата оказывается в прошлом — сдвигаем на +30 дней вперёд
+// (при необходимости несколько раз подряд, если бот был offline дольше одного цикла) —
+// дальше цикл продолжается сам, без участия человека.
+function addDaysServer(dateStr, days){
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  return localDateStrServer(d);
+}
+cron.schedule('0 6 * * *', async () => {
+  console.log('[CRON] Membership renewal...');
+  const users = (await getAllUsers()).filter(u => u.track !== 'client');
+  const todayStr = localDateStrServer(new Date());
+  let sent = 0;
+  for (const u of users) {
+    const doc = await fsGet(`users/${u.uid}`);
+    let renewalDate = doc?.fields?.membershipRenewalDate?.stringValue;
+    if (!renewalDate) continue;
+
+    let rolled = false;
+    while (renewalDate < todayStr) {
+      renewalDate = addDaysServer(renewalDate, 30);
+      rolled = true;
+    }
+    if (rolled) {
+      await fsSet(`users/${u.uid}`, { membershipRenewalDate: renewalDate });
+    }
+
+    const daysUntil = Math.round((new Date(renewalDate + 'T00:00:00') - new Date(todayStr + 'T00:00:00')) / 86400000);
+    const name = u.name.split(' ')[0];
+    let text = null;
+    if (daysUntil === 3) {
+      text =
+        `⏰ *${name}, через 3 дня продление членства*\n\n` +
+        `Ближайшее продление клубной подписки Travel Advantage — *${renewalDate}*.\n\n` +
+        `Проверь, что карта привязана и на ней достаточно средств — оплата спишется автоматически.`;
+    } else if (daysUntil === 0) {
+      text =
+        `🔔 *${name}, сегодня продление членства*\n\n` +
+        `Сегодня — день автоматического списания за подписку Travel Advantage.\n\n` +
+        `Если всё в порядке — ничего делать не нужно, просто держи это в голове.`;
+    }
+    if (text && await sendToUser(u, text)) sent++;
+  }
+  console.log(`[CRON] Membership renewal: ${sent} notifications sent`);
+}, { timezone: 'UTC' });
+
 // ── /top3 — показать топ-3 прошлой недели по запросу, в любой момент (не только в понедельник) ──
 bot.onText(/^\/top3/i, async (msg) => {
   const uid = String(msg.from.id);
